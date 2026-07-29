@@ -1,0 +1,7 @@
+geopandas
+matplotlib
+owslib
+pandas
+pygimli
+rioxarray
+streamlit
