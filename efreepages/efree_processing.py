@@ -373,6 +373,19 @@ def show_threeplot_results():
                   options=['JSON', 'Plot (3x)', "Plot (Model)", "VTK"],
                   key="dl_type_select"
                   )
+
+    jsonText = _convert_json_for_download(hvData)
+
+    dlJSON.download_button(
+        label="JSON",
+        data=jsonText,
+        file_name=f"{hvData.site}_JSON_{hvID}_{nowTimeStr}.json",
+        mime="app
+        lication/json",
+        icon=":material/data_object:"
+        )
+
+
     fname = 'FILENAME'
     jsonDict = {'test':"value"}
     kwargDict = {
@@ -389,7 +402,27 @@ def show_threeplot_results():
     #st.download_button('3x Plot')
     #st.download_button('Model Plot')
     st.pyplot(fig)
+
+# JSON File
+def convert_to_json():
+    attrsToCheck = ['ert_data', 'mgr', 'inv']
+
+    jsonDict = {"Profile_Name":None,
+                "Project_Name":None,
+                "XYZ":None,
+                "Array":None,
+                "Spread":None,
+                "Min_Elec_Spacing":None,
+                "Observed_Data":None,
+                "Forward_Data":None,
+                "Residuals":None,
+                "Model_Data":None,
+                "Chi2":None,
+                }
+
     
+    return 
+
 
 if __name__ == "__main__":
     main()
