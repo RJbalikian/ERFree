@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 
@@ -7,6 +8,7 @@ from matplotlib.collections import PolyCollection
 from matplotlib.colors import Normalize, LogNorm
 from matplotlib import cm
 import numpy as np
+import pandas as pd
 import pygimli as pg
 import pygimli.meshtools as mt
 from pygimli.physics import ert
@@ -90,7 +92,12 @@ def main():
                                    value=maxRhoVal)
 
             # Data Level % Err Threshold
-            maxPctError = calculate_data_level_errors()
+            dataDF = st.session_state.data_df = calculate_data_level_errors()
+
+            if dataDF is None or 'DL_err' not in dataDF.columns:
+                maxPctError = 1000
+            else:
+                maxPctError = dataDF['DL_Err'].max()
             if maxPctError > 1000:
                 maxPctError = 1000
 
@@ -178,9 +185,59 @@ def on_data_upload():
 def pct_error_update():
     st.session_state.pct_err_slider = (0, st.session_state.pct_err_slider[1])
 
-def calculate_data_level_errors():
-    return 5000
 
+def calculate_data_level_errors():
+    # Get dataframe to manipulate
+    if not hasattr(st.session_state, 'ert_data') or st.session_state.ert_data is None:
+        return
+    elif not hasattr(st.session_state, 'data_df') or st.session_state.data_df is None:
+        dataDF = st.session_state.data_df = get_df_from_data(st.session_state.ert_data)
+    else:
+        dataDF = st.session_state.data_df
+        
+    if 'DL_Err' not in dataDF.columns:
+        # Calculate data levels, and mean values for each level, based on a and n
+        uniqueAspace = set(dataDF['aSpace'].unique())
+        uniqueNfactor = set(dataDF['nFactor'].unique())
+
+        currDL = 1
+        dataDF['DataLevel'] = np.nan
+        dataDF['DL_Mean'] = np.nan
+        for aspace in uniqueAspace:
+            for nfactor in uniqueNfactor:
+                dlDF = dataDF[(dataDF['aSpace']==aspace) & (dataDF['nFactor']==nfactor)]
+                if dlDF.shape[0] > 0:
+                    dataDF.loc[dlDF.index, 'DataLevel'] = currDL
+                    rCol = 'rhoa'
+                    if 'rhoa' not in dlDF.columns or dlDF['rhoa'].isnull().all():
+                        rCol = 'r'
+                    dlMean = np.round(dlDF[rCol].mean(), 5)
+                    dataDF.loc[dlDF.index, 'DL_Mean'] = dlMean
+                    currDL += 1
+        dataDF['DL_Err'] = np.round(((dataDF['DL_Mean'] - dataDF[rCol]) / dataDF['DL_Mean']) * 100, 5)
+
+    return dataDF
+
+def get_df_from_data(data):
+    sensor_x = data.sensors()[:, 0]
+    a_x = sensor_x[data["a"]]
+    b_x = sensor_x[data["b"]]
+    m_x = sensor_x[data["m"]]
+    n_x = sensor_x[data["n"]]
+    elecLocs = np.stack([a_x, b_x, m_x, n_x]).T
+
+    df = pd.DataFrame(elecLocs, columns=['Ax', 'Bx', 'Mx', 'Nx'])
+    df['pseudoX'] = df[['Ax', 'Nx']].mean(axis=1)
+    df['pseudoZ'] = np.round((np.tan(np.deg2rad(28)) * np.abs(df['Ax'] - df['Nx']) / 2), 2)
+    df['aSpace'] = np.abs(df['Ax'] - df['Bx'])
+    df['nFactor'] = (df[['Ax', 'Bx']].mean(axis=1) - df[['Mx', 'Nx']].mean(axis=1)) // df['aSpace']
+
+    mayNotHave = ['r', 'rhoa', 'stacks', 'err', 'u', "Latitude", "Longitude"]
+    for col in mayNotHave:
+        if col in data.dataMap().keys():
+            df[col] = data[col]
+    
+    return df
 
 def show_threeplot_results():
     data = st.session_state.ert_data
@@ -374,54 +431,75 @@ def show_threeplot_results():
                   key="dl_type_select"
                   )
 
-    jsonText = _convert_json_for_download(hvData)
+    jsonText = convert_to_json()
 
-    dlJSON.download_button(
+    st.download_button(
         label="JSON",
         data=jsonText,
-        file_name=f"{hvData.site}_JSON_{hvID}_{nowTimeStr}.json",
-        mime="app
-        lication/json",
+        file_name=f"INV_{st.session_state.data_file_name}.json",
+        mime="application/json",
         icon=":material/data_object:"
         )
 
-
-    fname = 'FILENAME'
-    jsonDict = {'test':"value"}
-    kwargDict = {
-        'JSON':{'label':'JSON',
-                'data':jsonDict,
-                'file_name':fname,
-                'mime':'application/json'
-                }
-    }
-    dlKwargs = kwargDict[st.session_state.dl_type_select]
-    st.download_button(type='tertiary',
-                       **dlKwargs
-                       )
+    #jsonDict = {'test':"value"}
+    #kwargDict = {
+    #    'JSON':{'label': 'JSON',
+    #            'data': jsonDict,
+    #            'file_name': fname,
+    #            'mime': 'application/json'
+    #            }
+    #}
+    #dlKwargs = kwargDict[st.session_state.dl_type_select]
+    #st.download_button(type='tertiary',
+    #                   **dlKwargs
+    #                   )
     #st.download_button('3x Plot')
     #st.download_button('Model Plot')
     st.pyplot(fig)
 
 # JSON File
 def convert_to_json():
+    dataDF = get_df_from_data(st.session_state.ert_data)
     attrsToCheck = ['ert_data', 'mgr', 'inv']
+    mgr = st.session_state.mgr
+    pmesh = mgr.paraDomain
+    inv = st.session_state.inv
 
-    jsonDict = {"Profile_Name":None,
-                "Project_Name":None,
-                "XYZ":None,
-                "Array":None,
-                "Spread":None,
-                "Min_Elec_Spacing":None,
-                "Observed_Data":None,
-                "Forward_Data":None,
-                "Residuals":None,
-                "Model_Data":None,
-                "Chi2":None,
+    rCol = 'rhoa'
+    if 'rhoa' not in dataDF or dataDF['rhoa'].isnull().all():
+        try:
+            dataDF['rhoa'] = np.asarray(mgr.inv.dataVals)
+        except Exception:
+            rCol = 'r'
+
+
+    # Get Chi2 data
+    ch2Total = mgr.inv.chi2History
+    iterations = [int(i) for i in np.arange(len(ch2Total))]
+    chi2Dict = dict(zip(iterations, ch2Total))
+
+    # Model iterations
+    allModels = mgr.inv.modelHistory
+    iterations = [int(i) for i in np.arange(len(allModels))]
+    modelDict = dict(zip(iterations, np.asarray(allModels).tolist()))
+
+    jsonDict = {"Profile_Name": st.session_state.data_file_name,
+                "Project_Name": None,
+                "XYZ": None,
+                "Array": None,
+                "Spread": None,
+                "Min_Elec_Spacing": None,
+                'Data_Locations': dataDF[['pseudoX', 'pseudoZ']].to_dict(),
+                "Data_Observed": dataDF[rCol].to_numpy().tolist(),
+                "Data_Forward": np.asarray(mgr.inv.response).tolist(),
+                "Data_Residuals": np.asarray(mgr.inv.residual()).tolist(),
+                "Model_Locations": {'MeshXCenter': [c.center().x() for c in pmesh.cells()],
+                                    'MeshZCenter': [c.center().y() for c in pmesh.cells()]},
+                "Model_Resistivity": modelDict,
+                "Chi2": chi2Dict,
                 }
-
     
-    return 
+    return json.dumps(jsonDict)
 
 
 if __name__ == "__main__":

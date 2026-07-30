@@ -10,3 +10,4 @@ Attributes in the st.session_state variable
 | profile_loc_uploader |key| st.file_uploader      | For geospatial file with profile location | 
 | data_uploader |key| st.file_uploader      | For file with ERT data | 
 | data_file_name | `None` | str | Filename of uploaded ert data file, after it is uploaded |
+| data_df        | `None` | pd.DataFrame | Dataframe version of the data imported from file |
