@@ -77,27 +77,37 @@ def main():
 
             minRhoVal = 0
             maxRhoVal = 1000
+
             if hasERTData:
-                minRhoVal = np.asarray(st.session_state.ert_data['rhoa']).min()
-                maxRhoVal = np.asarray(st.session_state.ert_data['rhoa']).max()
+                rCol = 'rhoa'
+                if 'rhoa' not in st.session_state.ert_data.dataMap().keys() \
+                    or st.session_state.data_df['rhoa'].isnull().all() \
+                    or np.nansum(np.abs(st.session_state.data_df['rhoa'])) == 0:
+                    rCol = 'r'
+                minRhoVal = np.asarray(st.session_state.ert_data[rCol]).min()
+                maxRhoVal = np.asarray(st.session_state.ert_data[rCol]).max()
 
             minRhoCol.number_input("Min $$\\rho_{apparent}$$",
                                    key='min_rho',
                                    value=minRhoVal, 
-                                   disabled=disableAppRhoRange)
+                                   disabled=disableAppRhoRange,
+                                   on_change=rho_range_update)
 
             maxRhoCol.number_input('Max $$\\rho_{apparent}$$',
                                    disabled=disableAppRhoRange,
                                    key='max_rho',
-                                   value=maxRhoVal)
+                                   value=maxRhoVal,
+                                   on_change=rho_range_update)
 
             # Data Level % Err Threshold
             dataDF = st.session_state.data_df = calculate_data_level_errors()
 
-            if dataDF is None or 'DL_err' not in dataDF.columns:
+
+            if dataDF is None or 'DL_Err' not in dataDF.columns:
                 maxPctError = 1000
             else:
-                maxPctError = dataDF['DL_Err'].max()
+                maxPctError = int(np.ceil(np.nanmax(dataDF['DL_Err'])))
+
             if maxPctError > 1000:
                 maxPctError = 1000
 
@@ -110,11 +120,10 @@ def main():
 
 
 def on_invert_data():
-    print('inverting data')
-    st.write("Inverting data")
+    st.toast("Inverting data")
     data = st.session_state.ert_data
+    dataDF = st.session_state.data_df
     data['k'] = ert.geometricFactors(data)
-    print(data['k'])
     # Also make sure error is set (required by the inversion)
     # Use a simple relative error if Var% is not already mapped to 'err'
     errThresh = 0.01
@@ -122,9 +131,19 @@ def on_invert_data():
     if not data.haveData('err') or any(data['err']==0) or all(data['err']==0) or all(data['err']<errThresh) or np.nanmedian(data['err']) < errThresh:
         data['err'] = errPercent
 
-    if st.session_state.quick_apprho_range:
-        data.remove(data['rhoa'] < st.session_state.min_rho)
-        data.remove(data['rhoa'] > st.session_state.max_rho)
+    dataDF.loc[dataDF.isna().any(axis=1), 'Use'] = False
+
+    #if st.session_state.quick_apprho_range:
+    #    rCol = 'rhoa'
+    #    if 'rhoa' not in dataDF.columns or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa']))==0:
+    #        rCol = 'r'
+    #    data.remove(data[rCol] < st.session_state.min_rho)
+    #    data.remove(data[rCol] > st.session_state.max_rho)
+    #print(type(data['rhoa'] > st.session_state.max_rho), data['rhoa'] > st.session_state.max_rho)
+    remList = ~dataDF['Use']
+    remList = np.array(remList).astype(bool)
+    data.remove(remList)
+
 
     mgr = ert.ERTManager(data)
     sensors = np.array(data.sensors())
@@ -156,15 +175,14 @@ def on_invert_data():
     calc = np.asarray(mgr.inv.response)
     mape = np.mean(np.abs(obs - calc) / obs * 100)
 
-    print("Chi²", mgr.inv.chi2())
-    print("% Error", mape)
+    st.write("Chi²", mgr.inv.chi2())
+    st.write("% Error", mape)
     
     show_threeplot_results()
 
 
 def on_data_upload():
     if st.session_state.data_uploader is not None:
-        print(dir(st.session_state.data_uploader))
         st.session_state.data_file_name = st.session_state.data_uploader.name
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = os.path.join(tmpdir, "data.txt")
@@ -179,11 +197,42 @@ def on_data_upload():
         #ax.scatter(data.sensors()[:, 0], data.sensors()[:, 1])
         #st.session_state.data_preview_container.pyplot(fig)
 
-        st.session_state.ert_data = data
+        st.session_state.ert_data = st.session_state.ert_data_in = data
+        st.session_state.data_df = st.session_state.data_df_in = get_df_from_data(data)
+        st.session_state.data_df = st.session_state.data_df_in = calculate_data_level_errors()
+    st.dataframe(st.session_state.data_df_in)
 
 
 def pct_error_update():
+    # Always bring the low end back to 0
     st.session_state.pct_err_slider = (0, st.session_state.pct_err_slider[1])
+    dataDF = st.session_state.data_df
+    if 'DL_Err' not in dataDF:
+        dataDF = calculate_data_level_errors()
+    dataDF['Use_DLErr'] = np.abs(dataDF['DL_Err']) <= st.session_state.pct_err_slider[1]
+    update_used_data(dataDF)
+
+
+def rho_range_update():
+    if not hasattr(st.session_state, 'data_df') or st.session_state.data_df is None:
+        get_df_from_data(st.session_state.ert_data)
+    dataDF = st.session_state.data_df
+    
+    rcol = 'rhoa'
+    if 'rhoa' not in st.session_state.ert_data.dataMap().keys():
+        rcol = 'r'
+
+    dataDF['Use_rhoRange'] = (st.session_state.min_rho < dataDF[rcol]) & (st.session_state.max_rho >= dataDF[rcol])
+    update_used_data(dataDF)
+
+
+def update_used_data(dataDF):
+    useCols = [col for col in dataDF.columns if 'Use' in col]
+
+    dataDF['Use'] = dataDF[useCols].sum(axis=1) == len(useCols)
+
+    st.session_state.data_df = dataDF
+    st.dataframe(st.session_state.data_df)
 
 
 def calculate_data_level_errors():
@@ -209,14 +258,15 @@ def calculate_data_level_errors():
                 if dlDF.shape[0] > 0:
                     dataDF.loc[dlDF.index, 'DataLevel'] = currDL
                     rCol = 'rhoa'
-                    if 'rhoa' not in dlDF.columns or dlDF['rhoa'].isnull().all():
+                    if 'rhoa' not in dlDF.columns or dlDF['rhoa'].isnull().all() or np.nansum(np.abs(dlDF['rhoa']))==0:
                         rCol = 'r'
                     dlMean = np.round(dlDF[rCol].mean(), 5)
                     dataDF.loc[dlDF.index, 'DL_Mean'] = dlMean
                     currDL += 1
         dataDF['DL_Err'] = np.round(((dataDF['DL_Mean'] - dataDF[rCol]) / dataDF['DL_Mean']) * 100, 5)
-
+    st.session_state.data_df = dataDF
     return dataDF
+
 
 def get_df_from_data(data):
     sensor_x = data.sensors()[:, 0]
@@ -236,13 +286,16 @@ def get_df_from_data(data):
     for col in mayNotHave:
         if col in data.dataMap().keys():
             df[col] = data[col]
-    
+
+    df['Use'] = True
     return df
+
 
 def show_threeplot_results():
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
     inv = st.session_state.inv
+
     # ── Extract sensor positions ─────────────────────────────────────────────────
     sensors = np.array(data.sensors())  # shape (N, 2) → x, z columns
 
@@ -342,6 +395,7 @@ def show_threeplot_results():
         print(mid_x.shape, pseudo_z.shape, rho_inv.shape)
         ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
                     levels=18, cmap=cmap)
+        ax.scatter(model_xCenter, model_zCenter, s=1, c='k')
 
     # Colorbar needs its own ScalarMappable since PolyCollection alpha is manual
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
@@ -438,7 +492,8 @@ def show_threeplot_results():
         data=jsonText,
         file_name=f"INV_{st.session_state.data_file_name}.json",
         mime="application/json",
-        icon=":material/data_object:"
+        icon=":material/data_object:",
+        on_click=no_redirect
         )
 
     #jsonDict = {'test':"value"}
@@ -457,6 +512,12 @@ def show_threeplot_results():
     #st.download_button('Model Plot')
     st.pyplot(fig)
 
+
+@st.fragment
+def no_redirect():
+    return
+
+
 # JSON File
 def convert_to_json():
     dataDF = get_df_from_data(st.session_state.ert_data)
@@ -466,12 +527,11 @@ def convert_to_json():
     inv = st.session_state.inv
 
     rCol = 'rhoa'
-    if 'rhoa' not in dataDF or dataDF['rhoa'].isnull().all():
+    if 'rhoa' not in dataDF or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa'])) == 0:
         try:
             dataDF['rhoa'] = np.asarray(mgr.inv.dataVals)
         except Exception:
             rCol = 'r'
-
 
     # Get Chi2 data
     ch2Total = mgr.inv.chi2History
@@ -493,8 +553,8 @@ def convert_to_json():
                 "Data_Observed": dataDF[rCol].to_numpy().tolist(),
                 "Data_Forward": np.asarray(mgr.inv.response).tolist(),
                 "Data_Residuals": np.asarray(mgr.inv.residual()).tolist(),
-                "Model_Locations": {'MeshXCenter': [c.center().x() for c in pmesh.cells()],
-                                    'MeshZCenter': [c.center().y() for c in pmesh.cells()]},
+                "Model_Locations": {'X': [c.center().x() for c in pmesh.cells()],
+                                    'Z': [c.center().y() for c in pmesh.cells()]},
                 "Model_Resistivity": modelDict,
                 "Chi2": chi2Dict,
                 }
