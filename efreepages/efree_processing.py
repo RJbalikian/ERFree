@@ -118,6 +118,16 @@ def main():
                       on_change=pct_error_update,
                       key='pct_err_slider')
 
+        st.selectbox("Plot Engine",
+                    options=['Altair', "Matplotlib"],
+                    key="plot_engine"
+                    )
+
+    try:
+        modelCheck = st.session_state.mgr.model
+        show_threeplot_results(st.session_state.plot_engine)
+    except Exception:
+        pass
 
 def on_invert_data():
     st.toast("Inverting data")
@@ -178,7 +188,7 @@ def on_invert_data():
     st.write("Chi²", mgr.inv.chi2())
     st.write("% Error", mape)
     
-    show_threeplot_results()
+    show_threeplot_results(st.session_state.plot_engine)
 
 
 def on_data_upload():
@@ -291,10 +301,46 @@ def get_df_from_data(data):
     return df
 
 
-def show_threeplot_results():
+def show_threeplot_results(plot_engine='altair'):
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
     inv = st.session_state.inv
+
+    # First show download button
+    SDLCol, DLBCol = st.columns([0.8, 0.2], vertical_alignment='bottom')
+    SDLCol.selectbox("Download data",
+                  options=['JSON', 
+                           "Model Plot", "Data Pseudo-plot", "Forward Model Plot", 
+                           "VTK",
+                           "XYZ"],
+                  key="dl_type_select"
+                  )
+
+    jsonText = convert_to_json()
+
+    DLBCol.download_button(
+        label="JSON",
+        data=jsonText,
+        file_name=f"INV_{st.session_state.data_file_name}.json",
+        mime="application/json",
+        icon=":material/data_object:",
+        on_click=no_redirect
+        )
+
+    #jsonDict = {'test':"value"}
+    #kwargDict = {
+    #    'JSON':{'label': 'JSON',
+    #            'data': jsonDict,
+    #            'file_name': fname,
+    #            'mime': 'application/json'
+    #            }
+    #}
+    #dlKwargs = kwargDict[st.session_state.dl_type_select]
+    #st.download_button(type='tertiary',
+    #                   **dlKwargs
+    #                   )
+    #st.download_button('3x Plot')
+    #st.download_button('Model Plot')
 
     # ── Extract sensor positions ─────────────────────────────────────────────────
     sensors = np.array(data.sensors())  # shape (N, 2) → x, z columns
@@ -326,191 +372,214 @@ def show_threeplot_results():
     mesh_x = np.array(mgr.mesh.cellCenters())[:, 0]
     mesh_z = np.array(mgr.mesh.cellCenters())[:, 1]
 
+    mplList = ['matplotlib', 'mpl', 'pyplot', 'plt', 'mat']
+    altList = ['altair', 'alt', 'a']
+    if str(plot_engine).lower() in mplList:
+            
 
-    # ── Triangulation for pseudosection panels ───────────────────────────────────
-    triang_pseudo = tri.Triangulation(mid_x, pseudo_z)
+        # ── Triangulation for pseudosection panels ───────────────────────────────────
+        triang_pseudo = tri.Triangulation(mid_x, pseudo_z)
 
-    # ── Triangulation for model panel ────────────────────────────────────────────
-    triang_model = tri.Triangulation(mesh_x, mesh_z)
+        # ── Triangulation for model panel ────────────────────────────────────────────
+        triang_model = tri.Triangulation(mesh_x, mesh_z)
 
-    # ── Plot ──────────────────────────────────────────────────────────────────────
-    fig, axes = plt.subplots(3, 1, figsize=(14, 14))
+        # ── Plot ──────────────────────────────────────────────────────────────────────
+        fig, axes = plt.subplots(3, 1, figsize=(14, 14))
 
-    vmin = min(rhoa_obs.min(), rhoa_fwd.min())
-    vmax = max(rhoa_obs.max(), rhoa_fwd.max())
+        vmin = min(rhoa_obs.min(), rhoa_fwd.min())
+        vmax = max(rhoa_obs.max(), rhoa_fwd.max())
 
-    # Panel A — observed
-    ax = axes[0]
-    tc0 = ax.tripcolor(triang_pseudo, rhoa_obs, shading='flat',
-                    cmap='jet', vmin=vmin, vmax=vmax)
-    ax.scatter(mid_x, pseudo_z, c=rhoa_obs, cmap='jet',
-            vmin=vmin, vmax=vmax, s=20, edgecolors='k', linewidths=0.3, zorder=3)
-    plt.colorbar(tc0, ax=ax, label='Apparent Resistivity (Ω·m)')
-    ax.set_title('a) Observed Apparent Resistivity')
-    ax.set_xlabel('Distance (m)')
-    ax.set_ylabel('Pseudo-depth (m)')
+        # Panel A — observed
+        ax = axes[0]
+        tc0 = ax.tripcolor(triang_pseudo, rhoa_obs, shading='flat',
+                        cmap='jet', vmin=vmin, vmax=vmax)
+        ax.scatter(mid_x, pseudo_z, c=rhoa_obs, cmap='jet',
+                vmin=vmin, vmax=vmax, s=20, edgecolors='k', linewidths=0.3, zorder=3)
+        plt.colorbar(tc0, ax=ax, label='Apparent Resistivity (Ω·m)')
+        ax.set_title('a) Observed Apparent Resistivity')
+        ax.set_xlabel('Distance (m)')
+        ax.set_ylabel('Pseudo-depth (m)')
 
-    # Panel B — forward model response
-    ax = axes[1]
-    tc1 = ax.tripcolor(triang_pseudo, rhoa_fwd, shading='flat',
-                    cmap='jet', vmin=vmin, vmax=vmax)
-    ax.scatter(mid_x, pseudo_z, c=rhoa_fwd, cmap='jet',
-            vmin=vmin, vmax=vmax, s=20, edgecolors='k', linewidths=0.3, zorder=3)
-    plt.colorbar(tc1, ax=ax, label='Apparent Resistivity (Ω·m)')
-    ax.set_title('b) Forward Model Apparent Resistivity')
-    ax.set_xlabel('Distance (m)')
-    ax.set_ylabel('Pseudo-depth (m)')
+        # Panel B — forward model response
+        ax = axes[1]
+        tc1 = ax.tripcolor(triang_pseudo, rhoa_fwd, shading='flat',
+                        cmap='jet', vmin=vmin, vmax=vmax)
+        ax.scatter(mid_x, pseudo_z, c=rhoa_fwd, cmap='jet',
+                vmin=vmin, vmax=vmax, s=20, edgecolors='k', linewidths=0.3, zorder=3)
+        plt.colorbar(tc1, ax=ax, label='Apparent Resistivity (Ω·m)')
+        ax.set_title('b) Forward Model Apparent Resistivity')
+        ax.set_xlabel('Distance (m)')
+        ax.set_ylabel('Pseudo-depth (m)')
 
-    # Panel C — inverted model
+        # Panel C — inverted model
 
-    # ── Sensitivity / coverage ───────────────────────────────────────────────────
-    # mgr.coverage() -> log10 sensitivity per paraDomain cell (same order as mgr.model)
-    cov = mgr.coverage()
+        # ── Sensitivity / coverage ───────────────────────────────────────────────────
+        # mgr.coverage() -> log10 sensitivity per paraDomain cell (same order as mgr.model)
+        cov = mgr.coverage()
 
-    # Normalize coverage to [0, 1] for alpha, clipping extreme tails so a few
-    # very high/low sensitivity cells don't wash out the whole scale
-    cov_lo, cov_hi = np.percentile(cov, [0, 100])
-    alpha_min = 0.01  # fully "invisible" cells still get a faint tint
-    alpha = np.clip((cov - cov_lo) / (cov_hi - cov_lo), 0, 1)
-    alpha = alpha_min + (1 - alpha_min) * alpha
+        # Normalize coverage to [0, 1] for alpha, clipping extreme tails so a few
+        # very high/low sensitivity cells don't wash out the whole scale
+        cov_lo, cov_hi = np.percentile(cov, [0, 100])
+        alpha_min = 0.01  # fully "invisible" cells still get a faint tint
+        alpha = np.clip((cov - cov_lo) / (cov_hi - cov_lo), 0, 1)
+        alpha = alpha_min + (1 - alpha_min) * alpha
 
-    # ── Colors from resistivity (log-scaled) ─────────────────────────────────────
-    norm = LogNorm(vmin=rho_inv.min(), vmax=rho_inv.max())
-    cmap = plt.get_cmap('nipy_spectral')
-    rgba = cmap(norm(rho_inv))
-    #rgba[:, 3] = alpha   # overwrite alpha channel with sensitivity-based transparency
-    nodes = np.array(mgr.paraDomain.positions())
+        # ── Colors from resistivity (log-scaled) ─────────────────────────────────────
+        norm = LogNorm(vmin=rho_inv.min(), vmax=rho_inv.max())
+        cmap = plt.get_cmap('nipy_spectral')
+        rgba = cmap(norm(rho_inv))
+        #rgba[:, 3] = alpha   # overwrite alpha channel with sensitivity-based transparency
+        nodes = np.array(mgr.paraDomain.positions())
 
-    plot_type = 'model cells'
-    plot_type = 'contour'
-    ax = axes[2]
-    # ── Build cell polygons directly from the mesh (works for tris and quads) ───
-    if 'model' in plot_type:
-        polys = [nodes[np.array(c.ids())][:, :2] for c in mgr.paraDomain.cells()]
+        plot_type = 'model cells'
+        plot_type = 'contour'
+        ax = axes[2]
+        # ── Build cell polygons directly from the mesh (works for tris and quads) ───
+        if 'model' in plot_type:
+            polys = [nodes[np.array(c.ids())][:, :2] for c in mgr.paraDomain.cells()]
 
-        pc = PolyCollection(polys, facecolors=rgba, edgecolors='none')
-        ax.add_collection(pc)
-        ax.autoscale_view()
-    elif 'cont' in plot_type:
-        print(mid_x.shape, pseudo_z.shape, rho_inv.shape)
-        ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
-                    levels=18, cmap=cmap)
-        ax.scatter(model_xCenter, model_zCenter, s=1, c='k')
+            pc = PolyCollection(polys, facecolors=rgba, edgecolors='none')
+            ax.add_collection(pc)
+            ax.autoscale_view()
+        elif 'cont' in plot_type:
+            print(mid_x.shape, pseudo_z.shape, rho_inv.shape)
+            ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
+                        levels=18, cmap=cmap)
+            ax.scatter(model_xCenter, model_zCenter, s=1, c='k')
 
-    # Colorbar needs its own ScalarMappable since PolyCollection alpha is manual
-    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
-    sm.set_array([])
-    plt.colorbar(sm, ax=ax, label='Modeled Resistivity (Ω·m)')
+        # Colorbar needs its own ScalarMappable since PolyCollection alpha is manual
+        sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label='Modeled Resistivity (Ω·m)')
 
-    # ── Depth limit informed by sensitivity ──────────────────────────────────────
-    cellCenters = np.array(mgr.paraDomain.cellCenters())
-    scov = mgr.standardizedCoverage(threshold=-3.5)   # 0/1 per cell
-    well_resolved_z = cellCenters[scov > 0, 1]
+        # ── Depth limit informed by sensitivity ──────────────────────────────────────
+        cellCenters = np.array(mgr.paraDomain.cellCenters())
+        scov = mgr.standardizedCoverage(threshold=-3.5)   # 0/1 per cell
+        well_resolved_z = cellCenters[scov > 0, 1]
 
-    max_depth_cap = 100
-    if well_resolved_z.size > 0:
-        sens_depth_limit = np.percentile(well_resolved_z, 0.02)  # 2nd percentile = deep edge of good coverage
-    else:
-        sens_depth_limit = max_depth_cap # fallback
+        max_depth_cap = 100
+        if well_resolved_z.size > 0:
+            sens_depth_limit = np.percentile(well_resolved_z, 0.02)  # 2nd percentile = deep edge of good coverage
+        else:
+            sens_depth_limit = max_depth_cap # fallback
 
-    # Don't show deeper than ~100 m even if a few cells claim coverage beyond that,
-    # but don't force 100 m if sensitivity runs out sooner (shallow line, thin mesh, etc.)
-    topo_min = sensors[:, 1].min()
-    depth_limit = min(sens_depth_limit, max_depth_cap)  # less negative of the two = shallower cutoff wins if sensitivity is worse than 100 m
-    yPad = depth_limit * 0.05
-    minY = topo_min - (depth_limit - yPad)
-    maxY = sensors[:, 1].max() + yPad
+        # Don't show deeper than ~100 m even if a few cells claim coverage beyond that,
+        # but don't force 100 m if sensitivity runs out sooner (shallow line, thin mesh, etc.)
+        topo_min = sensors[:, 1].min()
+        depth_limit = min(sens_depth_limit, max_depth_cap)  # less negative of the two = shallower cutoff wins if sensitivity is worse than 100 m
+        yPad = depth_limit * 0.05
+        minY = topo_min - (depth_limit - yPad)
+        maxY = sensors[:, 1].max() + yPad
 
-    ax.plot(sensors[:, 0], sensors[:, 1], c='green', linewidth=2)
-    ax.scatter(sensors[:, 0], sensors[:, 1], c='k', marker='v', s=10, edgecolors='None', zorder=100)
+        ax.plot(sensors[:, 0], sensors[:, 1], c='green', linewidth=2)
+        ax.scatter(sensors[:, 0], sensors[:, 1], c='k', marker='v', s=10, edgecolors='None', zorder=100)
 
-    # Sort by x
-    pts = np.column_stack((mid_x, pseudo_z))
-    hull = ConvexHull(pts)
-    hull_pts = pts[hull.vertices]
-    # Find leftmost and rightmost hull vertices
-    left = np.argmin(hull_pts[:, 0])
-    right = np.argmax(hull_pts[:, 0])
+        # Sort by x
+        pts = np.column_stack((mid_x, pseudo_z))
+        hull = ConvexHull(pts)
+        hull_pts = pts[hull.vertices]
+        # Find leftmost and rightmost hull vertices
+        left = np.argmin(hull_pts[:, 0])
+        right = np.argmax(hull_pts[:, 0])
 
-    # Walk both directions around the hull
-    if left <= right:
-        path1 = hull_pts[left:right+1]
-        path2 = np.vstack((hull_pts[right:], hull_pts[:left+1]))
-    else:
-        path1 = np.vstack((hull_pts[left:], hull_pts[:right+1]))
-        path2 = hull_pts[right:left+1]
+        # Walk both directions around the hull
+        if left <= right:
+            path1 = hull_pts[left:right+1]
+            path2 = np.vstack((hull_pts[right:], hull_pts[:left+1]))
+        else:
+            path1 = np.vstack((hull_pts[left:], hull_pts[:right+1]))
+            path2 = hull_pts[right:left+1]
 
-    # The lower hull path has lower mean z
-    lower_hull = path1 if np.mean(path1[:, 1]) < np.mean(path2[:, 1]) else path2
+        # The lower hull path has lower mean z
+        lower_hull = path1 if np.mean(path1[:, 1]) < np.mean(path2[:, 1]) else path2
 
-    # Sort by x for interpolation
-    lower_hull = lower_hull[np.argsort(lower_hull[:, 0])]
+        # Sort by x for interpolation
+        lower_hull = lower_hull[np.argsort(lower_hull[:, 0])]
 
-    bottom_fun = interp1d(
-            lower_hull[:, 0],
-            lower_hull[:, 1],
-            bounds_error=False,
-            fill_value=np.nan
-            )
+        bottom_fun = interp1d(
+                lower_hull[:, 0],
+                lower_hull[:, 1],
+                bounds_error=False,
+                fill_value=np.nan
+                )
 
-    sensorTops = sensors[:, 1]
-    sensorBottoms = bottom_fun(sensors[:, 0])
-    xFill = sensors[:, 0]
-    xFill = xFill.tolist()
-    xFill.insert(0, min(nodes[:, 0]))
-    xFill.append(max(nodes[:, 0]))
-    yTop = sensors[:, 1] + sensorBottoms
-    yTop[np.isnan(yTop)] = max(nodes[:, 1])
-    yTop = yTop.tolist()
-    yTop.insert(0, max(nodes[:, 1]))
-    yTop.append(max(nodes[:, 1]))
-    yBottom = np.zeros_like(yTop)+min(nodes[:, 1])
-    ax.fill_between(xFill, 
-                    yTop,
-                    yBottom, 
-                    facecolor='white',
-                    zorder=1000)
-    minY = min(yTop) - yPad
+        sensorTops = sensors[:, 1]
+        sensorBottoms = bottom_fun(sensors[:, 0])
+        xFill = sensors[:, 0]
+        xFill = xFill.tolist()
+        xFill.insert(0, min(nodes[:, 0]))
+        xFill.append(max(nodes[:, 0]))
+        yTop = sensors[:, 1] + sensorBottoms
+        yTop[np.isnan(yTop)] = max(nodes[:, 1])
+        yTop = yTop.tolist()
+        yTop.insert(0, max(nodes[:, 1]))
+        yTop.append(max(nodes[:, 1]))
+        yBottom = np.zeros_like(yTop)+min(nodes[:, 1])
+        ax.fill_between(xFill, 
+                        yTop,
+                        yBottom, 
+                        facecolor='white',
+                        zorder=1000)
+        minY = min(yTop) - yPad
 
-    ax.set_ylim(minY, maxY)
-    ax.set_xlim(nodes[:, 0].min(), nodes[:, 0].max())
+        ax.set_ylim(minY, maxY)
+        ax.set_xlim(nodes[:, 0].min(), nodes[:, 0].max())
 
-    ax.set_title('c) Inverted Resistivity Model')
-    ax.set_xlabel('Distance (m)')
-    ax.set_ylabel('Depth (m)')
+        ax.set_title('c) Inverted Resistivity Model')
+        ax.set_xlabel('Distance (m)')
+        ax.set_ylabel('Depth (m)')
 
-    plt.tight_layout(pad=2.5)
-    st.selectbox("Download data",
-                  options=['JSON', 'Plot (3x)', "Plot (Model)", "VTK"],
-                  key="dl_type_select"
-                  )
+        plt.tight_layout(pad=2.5)
+        st.pyplot(fig)
 
-    jsonText = convert_to_json()
+    elif str(plot_engine).lower() in altList:
+        import altair as alt
+        from scipy.interpolate import griddata
 
-    st.download_button(
-        label="JSON",
-        data=jsonText,
-        file_name=f"INV_{st.session_state.data_file_name}.json",
-        mime="application/json",
-        icon=":material/data_object:",
-        on_click=no_redirect
+        # --- your data ---
+        # x, z, data are 1D arrays of the same length
+        #x = np.array([...])
+        #z = np.array([...])
+        #data = np.array([...])
+        x = model_xCenter
+        z = model_zCenter
+        data = np.log10(rho_inv)
+
+        # --- 1. Build a regular grid to interpolate onto ---
+        grid_res = 200  # resolution of the grid (higher = smoother)
+        xi = np.linspace(x.min(), x.max(), grid_res)
+        zi = np.linspace(z.min(), z.max(), grid_res)
+        xi_grid, zi_grid = np.meshgrid(xi, zi)
+
+        # --- 2. Interpolate scattered data onto the grid ---
+        # method options: 'linear', 'cubic', 'nearest'
+        data_grid = griddata(
+            points=(x, z),
+            values=data,
+            xi=(xi_grid, zi_grid),
+            method='cubic'
         )
 
-    #jsonDict = {'test':"value"}
-    #kwargDict = {
-    #    'JSON':{'label': 'JSON',
-    #            'data': jsonDict,
-    #            'file_name': fname,
-    #            'mime': 'application/json'
-    #            }
-    #}
-    #dlKwargs = kwargDict[st.session_state.dl_type_select]
-    #st.download_button(type='tertiary',
-    #                   **dlKwargs
-    #                   )
-    #st.download_button('3x Plot')
-    #st.download_button('Model Plot')
-    st.pyplot(fig)
+        # --- 3. Convert to long-form DataFrame for Altair ---
+        df = pd.DataFrame({
+            'x': xi_grid.ravel(),
+            'z': zi_grid.ravel(),
+            'value': data_grid.ravel()
+        }).dropna()  # drop NaNs from areas outside convex hull
+
+        # --- 4. Plot as a heatmap ---
+        chart = alt.Chart(df).mark_rect().encode(
+            x=alt.X('x:Q', bin=alt.Bin(maxbins=grid_res), title='X'),
+            y=alt.Y('z:Q', bin=alt.Bin(maxbins=grid_res), title='Z'),
+            color=alt.Color('value:Q', scale=alt.Scale(scheme='spectral'), title='Value'),
+            tooltip=['x', 'z', 'value']
+        ).properties(
+            width=500,
+            height=400,
+            title='Interpolated Data'
+        )
+
+        st.altair_chart(chart)
 
 
 @st.fragment
