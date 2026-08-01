@@ -123,6 +123,9 @@ def main():
                       on_change=pct_error_update,
                       key='pct_err_slider')
 
+        st.menu_button("Inversion Parameters",
+                       options=['Smoothness'])
+
         st.selectbox("Plot Engine",
                     options=['Altair', "Matplotlib"],
                     key="plot_engine"
@@ -130,9 +133,10 @@ def main():
 
     try:
         modelCheck = st.session_state.mgr.model
-        show_threeplot_results(st.session_state.plot_engine)
+        show_inv_results(st.session_state.plot_engine)
     except Exception:
         pass
+
 
 def on_invert_data():
     st.toast("Inverting data")
@@ -192,8 +196,8 @@ def on_invert_data():
 
     st.write("Chi²", mgr.inv.chi2())
     st.write("% Error", mape)
-        
-    show_threeplot_results(st.session_state.plot_engine)
+
+    show_inv_results(st.session_state.plot_engine)
 
 
 def on_data_upload():
@@ -313,13 +317,27 @@ def get_df_from_data(data):
     return df
 
 
-def show_threeplot_results(plot_engine='altair'):
+def show_inv_results(plot_engine='altair'):
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
     inv = st.session_state.inv
 
+    # Model iterations
+    allModels = mgr.inv.modelHistory
+    iterations = [int(i) for i in np.arange(len(allModels))]
+
+    ch2Total = mgr.inv.chi2History
+    optionMap = {}
+    for i, ch2 in enumerate(ch2Total):
+        optionMap[f'Iteration {i+1}       χ²: {ch2:.3f}'] = i
+
     # First show download button
-    SDLCol, DLBCol = st.columns([0.8, 0.2], vertical_alignment='bottom')
+    iterCol, SDLCol, DLBCol = st.columns([0.8, 0.8, 0.2], vertical_alignment='bottom')
+    iterCol.selectbox('Iteration', options=optionMap,
+                  index=len(optionMap.keys())-1,
+                  on_change=iteration_change,
+                  key='iteration_select')
+
     SDLCol.selectbox("Download data",
                   options=['JSON', 
                            "Model Plot", "Data Pseudo-plot", "Forward Model Plot", 
@@ -353,6 +371,8 @@ def show_threeplot_results(plot_engine='altair'):
     #                   )
     #st.download_button('3x Plot')
     #st.download_button('Model Plot')
+
+
 
     # ── Extract sensor positions ─────────────────────────────────────────────────
     sensors = np.array(data.sensors())  # shape (N, 2) → x, z columns
@@ -598,6 +618,9 @@ def show_threeplot_results(plot_engine='altair'):
 def no_redirect():
     return
 
+def iteration_change():
+    st.session_state.iter = st.session_state.iteration_select
+    return
 
 # JSON File
 def convert_to_json():
