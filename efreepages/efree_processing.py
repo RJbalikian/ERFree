@@ -58,7 +58,7 @@ def main():
         else:
             st.markdown("Data Preview (not yet available)")
             st.session_state.data_preview_container = st.container()
-        qeExpanded = False
+        qeExpanded = True
         hasERTData = False
         if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
             qeExpanded = True
@@ -68,8 +68,10 @@ def main():
                     expanded=qeExpanded):
 
             # App Rho Range
+            st.checkbox('Automatically remove negative values',
+                        value=True, key="auto_neg_remove")
             st.checkbox("Discard data not in $$\\rho_{apparent}$$ range:",
-                        value=False, key='quick_apprho_range')
+                        value=True, key='quick_apprho_range')
             disableAppRhoRange = True
             if st.session_state.quick_apprho_range:
                 disableAppRhoRange = False
@@ -85,6 +87,9 @@ def main():
                     or np.nansum(np.abs(st.session_state.data_df['rhoa'])) == 0:
                     rCol = 'r'
                 minRhoVal = np.asarray(st.session_state.ert_data[rCol]).min()
+                print(minRhoVal, minRhoVal<0, st.session_state.auto_neg_remove)
+                if minRhoVal < 0 and st.session_state.auto_neg_remove:
+                    minRhoVal = 0
                 maxRhoVal = np.asarray(st.session_state.ert_data[rCol]).max()
 
             minRhoCol.number_input("Min $$\\rho_{apparent}$$",
@@ -131,9 +136,10 @@ def main():
 
 def on_invert_data():
     st.toast("Inverting data")
+
     data = st.session_state.ert_data
     dataDF = st.session_state.data_df
-    data['k'] = ert.geometricFactors(data)
+    #data['k'] = ert.geometricFactors(data)
     # Also make sure error is set (required by the inversion)
     # Use a simple relative error if Var% is not already mapped to 'err'
     errThresh = 0.01
@@ -153,7 +159,6 @@ def on_invert_data():
     remList = ~dataDF['Use']
     remList = np.array(remList).astype(bool)
     data.remove(remList)
-
 
     mgr = ert.ERTManager(data)
     sensors = np.array(data.sensors())
@@ -187,7 +192,7 @@ def on_invert_data():
 
     st.write("Chi²", mgr.inv.chi2())
     st.write("% Error", mape)
-    
+        
     show_threeplot_results(st.session_state.plot_engine)
 
 
@@ -201,15 +206,22 @@ def on_data_upload():
             st.session_state.pre_data = ert.load(data_path)
         data = st.session_state.ert_data = st.session_state.pre_data
         data['k'] = ert.geometricFactors(data)
-        st.session_state.min_rho = np.asarray(data['rhoa']).min()
-        st.session_state.max_rho = np.asarray(data['rhoa']).max()
+
         #fig, ax = plt.subplots()
         #ax.scatter(data.sensors()[:, 0], data.sensors()[:, 1])
         #st.session_state.data_preview_container.pyplot(fig)
 
         st.session_state.ert_data = st.session_state.ert_data_in = data
-        st.session_state.data_df = st.session_state.data_df_in = get_df_from_data(data)
+        dataDF = get_df_from_data(data)
+        if 'rhoa' not in dataDF.columns or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa'])) == 0:
+            dataDF['rhoa'] = dataDF['r'] * data['k']
+            data['rhoa'] = dataDF['rhoa']
+        st.session_state.data_df = st.session_state.data_df_in  = dataDF
         st.session_state.data_df = st.session_state.data_df_in = calculate_data_level_errors()
+        st.session_state.min_rho = np.asarray(data['rhoa']).min()
+        if st.session_state.auto_neg_remove and np.asarray(data['rhoa']).min() < 0:
+            st.session_state.min_rho = 0
+        st.session_state.max_rho = np.asarray(data['rhoa']).max()
     st.dataframe(st.session_state.data_df_in)
 
 
@@ -329,7 +341,7 @@ def show_threeplot_results(plot_engine='altair'):
 
     #jsonDict = {'test':"value"}
     #kwargDict = {
-    #    'JSON':{'label': 'JSON',
+    #    'JSON':{'label': ' JSON',
     #            'data': jsonDict,
     #            'file_name': fname,
     #            'mime': 'application/json'
