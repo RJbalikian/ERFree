@@ -127,7 +127,7 @@ def main():
                        options=['Smoothness'])
 
         st.selectbox("Plot Engine",
-                    options=['Altair', "Matplotlib"],
+                    options=['Matplotlib', "Altair"],
                     key="plot_engine"
                     )
 
@@ -343,7 +343,7 @@ def get_df_from_data(data):
     return df
 
 
-def show_inv_results(plot_engine='altair'):
+def show_inv_results(plot_engine='matplotlib'):
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
     inv = st.session_state.inv
