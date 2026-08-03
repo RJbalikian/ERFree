@@ -207,8 +207,33 @@ def on_data_upload():
             data_path = os.path.join(tmpdir, "data.txt")
             with open(data_path, "wb") as f:
                 f.write(st.session_state.data_uploader.getbuffer())
-            st.session_state.pre_data = ert.load(data_path)
-        data = st.session_state.ert_data = st.session_state.pre_data
+            data = ert.load(data_path)
+            
+            # Try to extract elevation
+            hasTopo = False
+            if data.sensors()[:,2].all() == 0:
+                with open(data_path, 'r') as d:
+                    dataRead = d.readlines()
+
+                for i, line in enumerate(dataRead):
+                    if "Topography" in line:
+                        hasTopo = True
+                        topoNum = i + 2
+                        break
+                st.session_state.topo = None
+                if hasTopo:
+                    topo = pd.read_csv(data_path, skiprows=topoNum, sep='\t', nrows=int(dataRead[topoNum])-1)
+                    st.session_state.topo = topo
+                    # Interpolate elevation data to sensor x-locations
+                    topoInterp = np.interp(data.sensors()[:,0].tolist(), 
+                            topo.index.tolist(), topo.values.flatten().tolist())
+
+                    # Add the topography data to the data set
+                    for i, p in enumerate(topoInterp):
+                        old = data.sensors()[i]
+                        data.setSensorPosition(i, pg.Pos(old[0], old[1], p))
+
+        st.session_state.pre_data = st.session_state.ert_data = data
         data['k'] = ert.geometricFactors(data)
 
         #fig, ax = plt.subplots()
@@ -216,6 +241,7 @@ def on_data_upload():
         #st.session_state.data_preview_container.pyplot(fig)
 
         st.session_state.ert_data = st.session_state.ert_data_in = data
+
         dataDF = get_df_from_data(data)
         if 'rhoa' not in dataDF.columns or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa'])) == 0:
             dataDF['rhoa'] = dataDF['r'] * data['k']
