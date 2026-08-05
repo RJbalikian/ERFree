@@ -135,7 +135,11 @@ def main():
         modelCheck = st.session_state.mgr.model
         show_inv_results(st.session_state.plot_engine)
     except Exception:
+        if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
+            show_data_preview(st.session_state.ert_data)
         pass
+
+
 
 
 def on_invert_data():
@@ -201,6 +205,7 @@ def on_invert_data():
 
 
 def on_data_upload():
+    hasTopo = False
     if st.session_state.data_uploader is not None:
         st.session_state.data_file_name = st.session_state.data_uploader.name
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,11 +227,16 @@ def on_data_upload():
                         break
                 st.session_state.topo = None
                 if hasTopo:
-                    topo = pd.read_csv(data_path, skiprows=topoNum, sep='\t', nrows=int(dataRead[topoNum])-1)
+                    try:
+                        topo = pd.read_csv(data_path, skiprows=topoNum, sep='\t', nrows=int(dataRead[topoNum])-1)
+                        topo = topo.astype(float)
+                    except Exception:
+                        topo = pd.read_csv(data_path, skiprows=topoNum, sep='\s', nrows=int(dataRead[topoNum])-1)
+                        topo = topo.astype(float)
                     st.session_state.topo = topo
                     # Interpolate elevation data to sensor x-locations
                     topoInterp = np.interp(data.sensors()[:,0].tolist(), 
-                            topo.index.tolist(), topo.values.flatten().tolist())
+                                           topo.index.tolist(), topo.values.flatten().tolist())
 
                     # Add the topography data to the data set
                     for i, p in enumerate(topoInterp):
@@ -252,8 +262,20 @@ def on_data_upload():
         if st.session_state.auto_neg_remove and np.asarray(data['rhoa']).min() < 0:
             st.session_state.min_rho = 0
         st.session_state.max_rho = np.asarray(data['rhoa']).max()
-    st.dataframe(st.session_state.data_df_in)
 
+    #show_data_preview(data)
+
+
+
+
+def show_data_preview(data):
+    fig, ax = plt.subplots(figsize=(20,2))
+    ax.plot(data.sensors()[:,0], data.sensors()[:,2], color='g')
+    ax.scatter(data.sensors()[:,0], data.sensors()[:,2], c='g', marker='v')
+    ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
+    #ax.xaxis.set_label_position('top')
+    st.pyplot(fig)
+    st.dataframe(st.session_state.data_df_in)
 
 def pct_error_update():
     # Always bring the low end back to 0
@@ -284,7 +306,7 @@ def update_used_data(dataDF):
     dataDF['Use'] = dataDF[useCols].sum(axis=1) == len(useCols)
 
     st.session_state.data_df = dataDF
-    st.dataframe(st.session_state.data_df)
+    #st.dataframe(st.session_state.data_df)
 
 
 def calculate_data_level_errors():
@@ -483,7 +505,8 @@ def show_inv_results(plot_engine='matplotlib'):
         alpha = alpha_min + (1 - alpha_min) * alpha
 
         # ── Colors from resistivity (log-scaled) ─────────────────────────────────────
-        norm = LogNorm(vmin=rho_inv.min(), vmax=rho_inv.max())
+        pctile = 5
+        norm = LogNorm(vmin=np.percentile(rho_inv, pctile), vmax=np.percentile(rho_inv, 100-pctile))
         cmap = plt.get_cmap('nipy_spectral')
         rgba = cmap(norm(rho_inv))
         #rgba[:, 3] = alpha   # overwrite alpha channel with sensitivity-based transparency
@@ -502,7 +525,9 @@ def show_inv_results(plot_engine='matplotlib'):
         elif 'cont' in plot_type:
             print(mid_x.shape, pseudo_z.shape, rho_inv.shape)
             ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
-                        levels=18, cmap=cmap)
+                        levels=18, cmap=cmap, 
+                        vmin=np.log10(np.percentile(rho_inv, pctile)),
+                        vmax=np.log10(np.percentile(rho_inv, 100-pctile)))
             ax.scatter(model_xCenter, model_zCenter, s=1, c='k')
 
         # Colorbar needs its own ScalarMappable since PolyCollection alpha is manual
