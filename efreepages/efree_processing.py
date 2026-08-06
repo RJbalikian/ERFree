@@ -9,12 +9,16 @@ from matplotlib.colors import Normalize, LogNorm
 from matplotlib import cm
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 import pygimli as pg
 import pygimli.meshtools as mt
 from pygimli.physics import ert
 from scipy.interpolate import interp1d
 from scipy.spatial import ConvexHull
-import streamlit as st
+import streamlit as st 
+
+PLOTLY_CMAPS = ["Jet", "Rainbow", "Turbo", "Viridis", "Cividis", "Portland"]
+
 
 st.set_page_config(page_title='ERTFree Processing',
                    layout='wide',
@@ -127,7 +131,7 @@ def main():
                        options=['Smoothness'])
 
         st.selectbox("Plot Engine",
-                    options=['Matplotlib', "Altair"],
+                    options=["Plotly", 'Matplotlib', "Altair"],
                     key="plot_engine"
                     )
 
@@ -138,8 +142,6 @@ def main():
         if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
             show_data_preview(st.session_state.ert_data)
         pass
-
-
 
 
 def on_invert_data():
@@ -212,8 +214,22 @@ def on_data_upload():
             data_path = os.path.join(tmpdir, "data.txt")
             with open(data_path, "wb") as f:
                 f.write(st.session_state.data_uploader.getbuffer())
-            data = ert.load(data_path)
-            
+            print(data_path)
+            try:
+                data = ert.load(data_path)
+            except Exception:
+                with open(data_path, "r") as f:
+                    dataText = f.read()
+                dataText = dataText.replace('\\t', r'\\s')
+                with open(data_path, "w") as f:
+                    f.write(dataText)
+                print("TRY AGAIN2")
+                data = ert.load(data_path)
+
+            if data is None:
+                print("NONE")
+                return
+
             # Try to extract elevation
             hasTopo = False
             if data.sensors()[:,2].all() == 0:
@@ -231,7 +247,7 @@ def on_data_upload():
                         topo = pd.read_csv(data_path, skiprows=topoNum, sep='\t', nrows=int(dataRead[topoNum])-1)
                         topo = topo.astype(float)
                     except Exception:
-                        topo = pd.read_csv(data_path, skiprows=topoNum, sep='\s', nrows=int(dataRead[topoNum])-1)
+                        topo = pd.read_csv(data_path, skiprows=topoNum, sep=r'\s', nrows=int(dataRead[topoNum])-1)
                         topo = topo.astype(float)
                     st.session_state.topo = topo
                     # Interpolate elevation data to sensor x-locations
@@ -266,8 +282,6 @@ def on_data_upload():
     #show_data_preview(data)
 
 
-
-
 def show_data_preview(data):
     fig, ax = plt.subplots(figsize=(20,2))
     ax.plot(data.sensors()[:,0], data.sensors()[:,2], color='g')
@@ -276,6 +290,7 @@ def show_data_preview(data):
     #ax.xaxis.set_label_position('top')
     st.pyplot(fig)
     st.dataframe(st.session_state.data_df_in)
+
 
 def pct_error_update():
     # Always bring the low end back to 0
@@ -454,6 +469,7 @@ def show_inv_results(plot_engine='matplotlib'):
 
     mplList = ['matplotlib', 'mpl', 'pyplot', 'plt', 'mat']
     altList = ['altair', 'alt', 'a']
+    plotlyList = ['plotly', 'plty']
     if str(plot_engine).lower() in mplList:
             
 
@@ -523,7 +539,6 @@ def show_inv_results(plot_engine='matplotlib'):
             ax.add_collection(pc)
             ax.autoscale_view()
         elif 'cont' in plot_type:
-            print(mid_x.shape, pseudo_z.shape, rho_inv.shape)
             ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
                         levels=18, cmap=cmap, 
                         vmin=np.log10(np.percentile(rho_inv, pctile)),
@@ -614,7 +629,6 @@ def show_inv_results(plot_engine='matplotlib'):
 
         plt.tight_layout(pad=2.5)
         st.pyplot(fig)
-
     elif str(plot_engine).lower() in altList:
         import altair as alt
         from scipy.interpolate import griddata
@@ -663,15 +677,245 @@ def show_inv_results(plot_engine='matplotlib'):
         )
 
         st.altair_chart(chart)
+    else: # Plotly
+        plot_resistivity_plotly(
+            model_xCenter,
+            model_zCenter,
+            rho_inv,
+            mgr,
+            sensors,
+            nodes,
+            mid_x,
+            pseudo_z,
+            pctile=2,
+            grid_res=300,
+            default_colorscale="Jet",
+            )
 
 
 @st.fragment
 def no_redirect():
     return
 
+
 def iteration_change():
     st.session_state.iter = st.session_state.iteration_select
     return
+
+
+def plot_resistivity_plotly(
+    model_xCenter,
+    model_zCenter,
+    rho_inv,
+    mgr,
+    sensors,
+    nodes,
+    mid_x,
+    pseudo_z,
+    pctile=2,
+    grid_res=300,
+    default_colorscale="Jet",
+):
+    model_xCenter = np.asarray(model_xCenter)
+    model_zCenter = np.asarray(model_zCenter)
+    rho_inv = np.asarray(rho_inv)
+    log_rho = np.log10(rho_inv)
+ 
+    # ── Interpolate the scattered model onto a regular grid ─────────────────
+    # matplotlib's Delaunay-based triangulation naturally stops at the convex
+    # hull of the point cloud: LinearTriInterpolator returns NaN for anything
+    # outside it. Combined with connectgaps=False on go.Contour below, this
+    # gives us "only plot to the convex hull" without any extra fill/mask
+    # geometry -- no need to reproduce the old fill_between hack for this part.
+    triang = tri.Triangulation(model_xCenter, model_zCenter)
+    interpolator = tri.LinearTriInterpolator(triang, log_rho)
+ 
+    grid_x = np.linspace(model_xCenter.min(), model_xCenter.max(), grid_res)
+    grid_z = np.linspace(model_zCenter.min(), model_zCenter.max(), grid_res)
+    grid_X, grid_Z = np.meshgrid(grid_x, grid_z)
+    grid_logrho = interpolator(grid_X, grid_Z)
+    grid_logrho = np.ma.filled(grid_logrho, np.nan)
+ 
+    vmin = np.log10(np.percentile(rho_inv, pctile))
+    vmax = np.log10(np.percentile(rho_inv, 100 - pctile))
+    n_levels = 18
+ 
+    fig = go.Figure()
+ 
+    # ── Filled contour (equivalent to ax.tricontourf) ────────────────────────
+    fig.add_trace(
+        go.Contour(
+            x=grid_x,
+            y=grid_z,
+            z=grid_logrho,
+            connectgaps=False,  # never bridge across the NaN gap outside the hull
+            colorscale=default_colorscale,
+            zmin=vmin,
+            zmax=vmax,
+            contours=dict(
+                coloring="fill",
+                start=vmin,
+                end=vmax,
+                size=(vmax - vmin) / n_levels,
+            ),
+            line=dict(width=0),
+            colorbar=dict(
+                title=dict(text="Modeled Resistivity (Ω·m)"),
+                # Ticks in log-space, labeled with the actual resistivity values
+                tickvals=np.linspace(vmin, vmax, 6),
+                ticktext=[f"{10**t:,.1f}" for t in np.linspace(vmin, vmax, 6)],
+            ),
+            name="Resistivity",
+            hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
+        )
+    )
+ 
+    # ── Scatter of data/cell-center points (toggle via legend click) ────────
+    fig.add_trace(
+        go.Scatter(
+            x=model_xCenter,
+            y=model_zCenter,
+            mode="markers",
+            marker=dict(size=3, color="black"),
+            name="Data points",
+            showlegend=True,
+            hoverinfo="skip",
+        )
+    )
+ 
+    # ── Depth limit informed by sensitivity ──────────────────────────────────
+    cellCenters = np.array(mgr.paraDomain.cellCenters())
+    scov = mgr.standardizedCoverage(threshold=-3.5)  # 0/1 per cell
+    well_resolved_z = cellCenters[scov > 0, 1]
+ 
+    max_depth_cap = 100
+    if well_resolved_z.size > 0:
+        sens_depth_limit = np.percentile(well_resolved_z, 0.02)  # deep edge of good coverage
+    else:
+        sens_depth_limit = max_depth_cap  # fallback
+ 
+    topo_min = sensors[:, 1].min()
+    depth_limit = min(sens_depth_limit, max_depth_cap)
+    yPad = depth_limit * 0.05
+    minY = topo_min - (depth_limit - yPad)
+    maxY = sensors[:, 1].max() + yPad
+ 
+    # ── Ground-surface line + sensor markers ─────────────────────────────────
+    fig.add_trace(
+        go.Scatter(
+            x=sensors[:, 0],
+            y=sensors[:, 1],
+            mode="lines",
+            line=dict(color="green", width=2),
+            name="Surface",
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=sensors[:, 0],
+            y=sensors[:, 1],
+            mode="markers",
+            marker=dict(symbol="triangle-down", color="black", size=10, line=dict(width=0)),
+            name="Sensors",
+            hoverinfo="skip",
+        )
+    )
+ 
+    # ── Convex-hull-based lower boundary of the well-resolved region ────────
+    pts = np.column_stack((mid_x, pseudo_z))
+    hull = ConvexHull(pts)
+    hull_pts = pts[hull.vertices]
+    left = np.argmin(hull_pts[:, 0])
+    right = np.argmax(hull_pts[:, 0])
+ 
+    if left <= right:
+        path1 = hull_pts[left : right + 1]
+        path2 = np.vstack((hull_pts[right:], hull_pts[: left + 1]))
+    else:
+        path1 = np.vstack((hull_pts[left:], hull_pts[: right + 1]))
+        path2 = hull_pts[right : left + 1]
+ 
+    lower_hull = path1 if np.mean(path1[:, 1]) < np.mean(path2[:, 1]) else path2
+    lower_hull = lower_hull[np.argsort(lower_hull[:, 0])]
+ 
+    bottom_fun = interp1d(
+        lower_hull[:, 0], lower_hull[:, 1], bounds_error=False, fill_value=np.nan
+    )
+ 
+    sensorTops = sensors[:, 1]
+    sensorBottoms = bottom_fun(sensors[:, 0])
+ 
+    xFill = sensors[:, 0].tolist()
+    xFill.insert(0, min(nodes[:, 0]))
+    xFill.append(max(nodes[:, 0]))
+ 
+    yTop = sensors[:, 1] + sensorBottoms
+    yTop[np.isnan(yTop)] = max(nodes[:, 1])
+    yTop = yTop.tolist()
+    yTop.insert(0, max(nodes[:, 1]))
+    yTop.append(max(nodes[:, 1]))
+ 
+    yBottom = (np.zeros(len(yTop)) + min(nodes[:, 1])).tolist()
+ 
+    # Closed polygon reproducing ax.fill_between(xFill, yTop, yBottom):
+    # walk forward along the top boundary, then back along the (flat) bottom.
+    poly_x = xFill + xFill[::-1]
+    poly_y = yTop + yBottom[::-1]
+ 
+    minY = min(yTop) - yPad
+ 
+    # Added LAST so it draws on top of everything else, same as zorder=1000.
+    fig.add_trace(
+        go.Scatter(
+            x=poly_x,
+            y=poly_y,
+            mode="lines",
+            line=dict(width=0),
+            fill="toself",
+            fillcolor="white",
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+ 
+    # ── Colormap-switcher buttons (client-side, no rerun) ────────────────────
+    fig.update_layout(
+        updatemenus=[
+            dict(
+                type="buttons",
+                direction="right",
+                x=1.0,
+                xanchor="right",
+                y=1.15,
+                yanchor="top",
+                showactive=True,
+                buttons=[
+                    dict(
+                        label=name,
+                        method="restyle",
+                        args=[{"colorscale": name}, [0]],  # target trace 0 = the Contour
+                    )
+                    for name in  PLOTLY_CMAPS
+                ],
+            )
+        ]
+    )
+ 
+    # ── Titles, labels, and axis limits ──────────────────────────────────────
+    fig.update_layout(
+        title="c) Inverted Resistivity Model",
+        xaxis_title="Distance (m)",
+        yaxis_title="Depth (m)",
+        template="plotly_white",
+        legend=dict(orientation="h", y=-0.15),
+        margin=dict(t=90, b=60, l=60, r=40),
+    )
+    fig.update_xaxes(range=[nodes[:, 0].min(), nodes[:, 0].max()])
+    fig.update_yaxes(range=[minY, maxY])
+ 
+    return fig
+
 
 # JSON File
 def convert_to_json():

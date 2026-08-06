@@ -2,6 +2,7 @@ geopandas
 matplotlib
 owslib
 pandas
+plotly
 pygimli
 rioxarray
 scipy
