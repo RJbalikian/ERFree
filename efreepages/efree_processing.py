@@ -1,7 +1,10 @@
 import json
 import os
 import tempfile
+import traceback
 
+import contextlib
+import io
 import matplotlib.pyplot as plt
 import matplotlib.tri as tri
 from matplotlib.collections import PolyCollection
@@ -136,12 +139,24 @@ def main():
                     )
 
     try:
+        # This first line will raise an error 
         modelCheck = st.session_state.mgr.model
         show_inv_results(st.session_state.plot_engine)
     except Exception:
         if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
             show_data_preview(st.session_state.ert_data)
         pass
+
+class StreamlitLogger(io.StringIO):
+    def __init__(self, placeholder):
+        super().__init__()
+        self.placeholder = placeholder
+
+    def write(self, s):
+        super().write(s)
+        self.placeholder.code(self.getvalue())
+        return len(s)
+
 
 
 def on_invert_data():
@@ -203,7 +218,11 @@ def on_invert_data():
     st.write("Chi²", mgr.inv.chi2())
     st.write("% Error", mape)
 
-    show_inv_results(st.session_state.plot_engine)
+    placeholder = st.empty()
+    logger = StreamlitLogger(placeholder)
+
+    with contextlib.redirect_stdout(logger):
+        show_inv_results(st.session_state.plot_engine)
 
 
 def on_data_upload():
@@ -223,8 +242,15 @@ def on_data_upload():
                 dataText = dataText.replace('\\t', r'\\s')
                 with open(data_path, "w") as f:
                     f.write(dataText)
-                print("TRY AGAIN2")
-                data = ert.load(data_path)
+                try:
+                    data = ert.load(data_path)
+                except Exception:
+                    st.info(title="Data Read Error", 
+                            body="Data could not be loaded successfully. Please check the format of your data file. \
+                            \n More information may be available in the source documentation: https://www.pygimli.org/_modules/pygimli/physics/ert/importData/")
+                    st.session_state.ert_data = None
+                    
+                    return
 
             if data is None:
                 print("NONE")
@@ -380,7 +406,7 @@ def get_df_from_data(data):
     return df
 
 
-def show_inv_results(plot_engine='matplotlib'):
+def show_inv_results(plot_engine='plotly'):
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
     inv = st.session_state.inv
@@ -462,10 +488,13 @@ def show_inv_results(plot_engine='matplotlib'):
     pmesh = mgr.paraDomain
     model_xCenter = np.array([c.center().x() for c in pmesh.cells()])
     model_zCenter = np.array([c.center().y() for c in pmesh.cells()])
-    rho_inv = np.asarray(inv)
+    currIterIndex = optionMap[st.session_state.iteration_select]
+    rho_inv = np.asarray(mgr.inv.modelHistory[currIterIndex])
 
     mesh_x = np.array(mgr.mesh.cellCenters())[:, 0]
     mesh_z = np.array(mgr.mesh.cellCenters())[:, 1]
+
+    nodes = np.array(mgr.paraDomain.positions())
 
     mplList = ['matplotlib', 'mpl', 'pyplot', 'plt', 'mat']
     altList = ['altair', 'alt', 'a']
@@ -526,7 +555,6 @@ def show_inv_results(plot_engine='matplotlib'):
         cmap = plt.get_cmap('nipy_spectral')
         rgba = cmap(norm(rho_inv))
         #rgba[:, 3] = alpha   # overwrite alpha channel with sensitivity-based transparency
-        nodes = np.array(mgr.paraDomain.positions())
 
         plot_type = 'model cells'
         plot_type = 'contour'
@@ -678,7 +706,7 @@ def show_inv_results(plot_engine='matplotlib'):
 
         st.altair_chart(chart)
     else: # Plotly
-        plot_resistivity_plotly(
+        fig = plot_resistivity_plotly(
             model_xCenter,
             model_zCenter,
             rho_inv,
@@ -691,6 +719,7 @@ def show_inv_results(plot_engine='matplotlib'):
             grid_res=300,
             default_colorscale="Jet",
             )
+        st.plotly_chart(fig)
 
 
 @st.fragment
@@ -700,7 +729,10 @@ def no_redirect():
 
 def iteration_change():
     st.session_state.iter = st.session_state.iteration_select
-    return
+    try:
+        show_inv_results()
+    except Exception:
+        st.error(traceback.format_exc())
 
 
 def plot_resistivity_plotly(
@@ -710,7 +742,7 @@ def plot_resistivity_plotly(
     mgr,
     sensors,
     nodes,
-    mid_x,
+    mid_x, 
     pseudo_z,
     pctile=2,
     grid_res=300,
@@ -739,10 +771,10 @@ def plot_resistivity_plotly(
     vmin = np.log10(np.percentile(rho_inv, pctile))
     vmax = np.log10(np.percentile(rho_inv, 100 - pctile))
     n_levels = 18
- 
+    plot_type = 'cont'
     fig = go.Figure()
  
-    # ── Filled contour (equivalent to ax.tricontourf) ────────────────────────
+    # Filled contour
     fig.add_trace(
         go.Contour(
             x=grid_x,
@@ -769,7 +801,7 @@ def plot_resistivity_plotly(
             hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
         )
     )
- 
+
     # ── Scatter of data/cell-center points (toggle via legend click) ────────
     fig.add_trace(
         go.Scatter(
@@ -779,6 +811,7 @@ def plot_resistivity_plotly(
             marker=dict(size=3, color="black"),
             name="Data points",
             showlegend=True,
+            visible='legendonly',
             hoverinfo="skip",
         )
     )
@@ -794,17 +827,16 @@ def plot_resistivity_plotly(
     else:
         sens_depth_limit = max_depth_cap  # fallback
  
-    topo_min = sensors[:, 1].min()
+    topo_min = sensors[:, 2].min()
     depth_limit = min(sens_depth_limit, max_depth_cap)
     yPad = depth_limit * 0.05
     minY = topo_min - (depth_limit - yPad)
-    maxY = sensors[:, 1].max() + yPad
- 
+    maxY = sensors[:, 2].max() + yPad
     # ── Ground-surface line + sensor markers ─────────────────────────────────
     fig.add_trace(
         go.Scatter(
             x=sensors[:, 0],
-            y=sensors[:, 1],
+            y=sensors[:, 2],
             mode="lines",
             line=dict(color="green", width=2),
             name="Surface",
@@ -878,35 +910,68 @@ def plot_resistivity_plotly(
             showlegend=False,
         )
     )
- 
-    # ── Colormap-switcher buttons (client-side, no rerun) ────────────────────
+
+    n_levels_options = [1, 2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,40,50,75,100]
     fig.update_layout(
-        updatemenus=[
+        sliders=[
             dict(
-                type="buttons",
-                direction="right",
+                active=n_levels_options.index(n_levels),  # wherever your current default is
                 x=1.0,
                 xanchor="right",
-                y=1.15,
+                y=-0.6,
+                yanchor="bottom",
+                len=0.4,
+                currentvalue=dict(prefix="Levels: "),
+                steps=[
+                    dict(
+                        label=str(n),
+                        method="restyle",
+                        args=[
+                            {
+                                "contours.start": vmin,
+                                "contours.end": vmax,
+                                "contours.size": (vmax - vmin) / n,
+                            },
+                            [0],  # trace 0 = Contour
+                        ],
+                    )
+                    for n in n_levels_options
+                ],
+            )
+        ]
+    )
+ 
+    fig.update_layout(
+        updatemenus=[
+            # Menu 2: Colorscale dropdown
+            dict(
+                type="dropdown",
+                direction="up",
+                x=1.025,          # <-- moved left so it doesn't overlap menu 1
+                xanchor="left",
+                y=-0.4,
                 yanchor="top",
                 showactive=True,
                 buttons=[
                     dict(
                         label=name,
                         method="restyle",
-                        args=[{"colorscale": name}, [0]],  # target trace 0 = the Contour
+                        args=[{"colorscale": name}, [0, 1]],  # apply to both traces now
                     )
-                    for name in  PLOTLY_CMAPS
+                    for name in PLOTLY_CMAPS
                 ],
-            )
+            ),
         ]
+    )
+    fig.update_layout(
+        xaxis=dict(side="top")
     )
  
     # ── Titles, labels, and axis limits ──────────────────────────────────────
     fig.update_layout(
         title="c) Inverted Resistivity Model",
         xaxis_title="Distance (m)",
-        yaxis_title="Depth (m)",
+        yaxis_title="Elevation (m)",
         template="plotly_white",
         legend=dict(orientation="h", y=-0.15),
         margin=dict(t=90, b=60, l=60, r=40),
