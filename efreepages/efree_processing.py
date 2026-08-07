@@ -20,8 +20,36 @@ from scipy.interpolate import interp1d
 from scipy.spatial import ConvexHull
 import streamlit as st 
 
-PLOTLY_CMAPS = ["Jet", "Rainbow", "Turbo", "Viridis", "Cividis", "Portland"]
+jfile = "./efreepages/boone_htem_cmap.json"
+with open(jfile, 'r') as jf:
+    jdata = json.load(jf)
+    
+HTEM_CMAP = sorted(jdata.items(), key=lambda kv: int(kv[0]))
 
+HTEM_CMAP = [
+    [int(val)/1600, f"rgb({r},{g},{b})"]
+    for val, (r, g, b) in jdata.items()]
+
+sorted_items = sorted(jdata.items(), key=lambda kv: int(kv[0]))
+keys_linear = [int(k) for k, v in sorted_items]
+keys_log = [np.log10(k) for k in keys_linear]
+
+kmin, kmax = min(keys_log), max(keys_log)
+
+HTEM_CMAP = [
+    [(logval - kmin) / (kmax - kmin), f"rgb({r},{g},{b})"]
+    for logval, (val, (r, g, b)) in zip(keys_log, sorted_items)
+]
+
+PLOTLY_CMAPS = [
+    ("Jet", "Jet"),
+    ("Rainbow", "Rainbow"),
+    ("Turbo", "Turbo"),
+    ("Portland", "Portland"),
+    ("Viridis", "Viridis"),
+    ("Cividis", "Cividis"),
+    ("HTEM", HTEM_CMAP),   # (label, actual colorscale value)
+]
 
 st.set_page_config(page_title='ERTFree Processing',
                    layout='wide',
@@ -525,10 +553,15 @@ def show_inv_results(plot_engine='plotly'):
         cmapType = '$\\rho$'
 
     cmapSliderCol, sliderType, cmapValCol = st.columns([70, 10, 15], vertical_alignment='bottom')
+
+    st.checkbox('HTEM Colors', value=True,
+                key='use_htem_colors')
+
     print("CMAPRANGE", cmapRange)
     sliderType.pills('Range Unit',
                      options=['%', '$\\rho$'],
                      default=cmapType,
+                     disabled=st.session_state.use_htem_colors,
                      key='cmap_range_type',
                      on_change=update_cmap_range)
 
@@ -575,9 +608,9 @@ def show_inv_results(plot_engine='plotly'):
               options = cmapRange,
               value=[minVal, maxVal],
               key='cmap_range',
+              disabled=st.session_state.use_htem_colors,
               on_change=update_cmap_range)
 
-    
     cmapValCol.text(f'{np.percentile(rho_inv, cmapLims[0]):.2f} ohmm - {np.percentile(rho_inv, cmapLims[1]):.2f}')
 
     #jsonDict = {'test':"value"}
@@ -851,7 +884,6 @@ def show_inv_results(plot_engine='plotly'):
             pseudo_z,
             pctile=2,
             grid_res=300,
-            default_colorscale="Jet",
             )
         st.plotly_chart(fig)
 
@@ -880,8 +912,11 @@ def plot_resistivity_plotly(
     pseudo_z,
     pctile=2,
     grid_res=300,
-    default_colorscale="Jet",
-):
+    #default_colorscale="Jet"
+    ):
+
+    default_colorscale = HTEM_CMAP
+
     model_xCenter = np.asarray(model_xCenter)
     model_zCenter = np.asarray(model_zCenter)
     rho_inv = np.asarray(rho_inv)
@@ -974,6 +1009,17 @@ def plot_resistivity_plotly(
  
     minY = min(yTop) - yPad
 
+    tickLevels = 8
+    tvals = np.linspace(logVmin, logVmax, tickLevels)
+    #cSize = (logVmax - logVmin) / n_levels
+    if st.session_state.use_htem_colors:
+        logVmin = np.log10(10)
+        logVmax = np.log10(1600)
+        #tickLevels = 40
+        tvals = np.linspace(logVmin, logVmax, tickLevels)
+        n_levels = 100
+    cSize = (logVmax - logVmin) / n_levels
+
     # Filled contour
     fig.add_trace(
         go.Contour(
@@ -988,14 +1034,14 @@ def plot_resistivity_plotly(
                 coloring="fill",
                 start=logVmin,
                 end=logVmax,
-                size=(logVmax - logVmin) / n_levels,
+                size=cSize,
             ),
             line=dict(width=0),
             colorbar=dict(
                 title=dict(text="Modeled Resistivity (Ω·m)"),
                 # Ticks in log-space, labeled with the actual resistivity values
-                tickvals=np.linspace(logVmin, logVmax, 6),
-                ticktext=[f"{10**t:,.1f}" for t in np.linspace(logVmin, logVmax, 6)],
+                tickvals=tvals,
+                ticktext=[f"{10**t:,.0f}" for t in tvals],
             ),
             name="Resistivity",
             hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
@@ -1016,7 +1062,6 @@ def plot_resistivity_plotly(
         )
     )
  
-
     # Clip corners using white overlay
     fig.add_trace(
             go.Scatter(
@@ -1095,18 +1140,18 @@ def plot_resistivity_plotly(
             dict(
                 type="dropdown",
                 direction="up",
-                x=1.025,          # <-- moved left so it doesn't overlap menu 1
+                x=1.025,
                 xanchor="left",
                 y=-0.4,
                 yanchor="top",
                 showactive=True,
                 buttons=[
                     dict(
-                        label=name,
+                        label=label,
                         method="restyle",
-                        args=[{"colorscale": name}, [0]],  # apply to both traces now
+                        args=[{"colorscale": value}, [0]],
                     )
-                    for name in PLOTLY_CMAPS
+                    for label, value in PLOTLY_CMAPS
                 ],
             ),
         ]
