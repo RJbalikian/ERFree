@@ -195,17 +195,22 @@ def on_invert_data():
 
     sensorStack = np.stack([sensors[a, 0], sensors[b, 0] ,sensors[m, 0] ,sensors[n, 0]]).T
 
-    mesh = ert.createInversionMesh(
-                data,
-                paraDX=0.5, # smaller = finer horizontal cells
-                paraDepth=100, # shallower model depth
-                quality=34
-                )
+    placeholder = st.empty()
+    logger = StreamlitLogger(placeholder)
 
-    mgr = ert.ERTManager(data)
-    st.session_state.mgr = mgr
-    inv = mgr.invert(mesh=mesh, maxIter=5, verbose=True)
-    st.session_state.inv = inv
+    with contextlib.redirect_stdout(logger):
+        print("CREATING MESH")
+        mesh = ert.createInversionMesh(
+                    data,
+                    paraDX=0.5, # smaller = finer horizontal cells
+                    paraDepth=100, # shallower model depth
+                    quality=34
+                    )
+
+        mgr = ert.ERTManager(data)
+        st.session_state.mgr = mgr
+        inv = mgr.invert(mesh=mesh, maxIter=5, verbose=True)
+        st.session_state.inv = inv
 
     obs = np.asarray(mgr.inv.dataVals)
     calc = np.asarray(mgr.inv.response)
@@ -217,12 +222,8 @@ def on_invert_data():
 
     st.write("Chi²", mgr.inv.chi2())
     st.write("% Error", mape)
-
-    placeholder = st.empty()
-    logger = StreamlitLogger(placeholder)
-
-    with contextlib.redirect_stdout(logger):
-        show_inv_results(st.session_state.plot_engine)
+    
+    show_inv_results(st.session_state.plot_engine)
 
 
 def on_data_upload():
@@ -325,7 +326,15 @@ def pct_error_update():
     if 'DL_Err' not in dataDF:
         dataDF = calculate_data_level_errors()
     dataDF['Use_DLErr'] = np.abs(dataDF['DL_Err']) <= st.session_state.pct_err_slider[1]
-    update_used_data(dataDF)
+    dataDF = update_used_data(dataDF)
+    minUse = dataDF[dataDF['Use']]['rhoa'].min()
+    maxUse = dataDF[dataDF['Use']]['rhoa'].max()
+    if st.session_state.auto_neg_remove:
+        if minUse < 0:
+            minUse = 0
+            
+    st.session_state.min_rho = minUse
+    st.session_state.max_rho = maxUse
 
 
 def rho_range_update():
@@ -342,12 +351,13 @@ def rho_range_update():
 
 
 def update_used_data(dataDF):
-    useCols = [col for col in dataDF.columns if 'Use' in col]
+    useCols = [col for col in dataDF.columns if 'Use' in col and col != 'Use']
 
     dataDF['Use'] = dataDF[useCols].sum(axis=1) == len(useCols)
 
     st.session_state.data_df = dataDF
     #st.dataframe(st.session_state.data_df)
+    return dataDF
 
 
 def calculate_data_level_errors():
@@ -406,6 +416,33 @@ def get_df_from_data(data):
     return df
 
 
+def update_cmap_range():
+    rangeType = st.session_state.cmap_range_type
+    mgr = st.session_state.mgr
+
+    ch2Total = mgr.inv.chi2History
+    optionMap = {}
+    for i, ch2 in enumerate(ch2Total):
+        optionMap[f'Iteration {i+1}       χ²: {ch2:.3f}'] = i
+
+    currIterIndex = optionMap[st.session_state.iteration_select]
+    rho_inv = np.asarray(mgr.inv.modelHistory[currIterIndex])
+
+    newLowVal = st.session_state.cmap_range[0]
+    newHiVal = st.session_state.cmap_range[1]
+    if rangeType != "%":
+        prevLowPctile = st.session_state.cmap_range[0]
+        prevHiPctile = st.session_state.cmap_range[1]
+
+        newLowVal = np.percentile(np.asarray(rho_inv), prevLowPctile)
+        newHiVal = np.percentile(np.asarray(rho_inv), prevHiPctile)
+
+    st.session_state.vmin = newLowVal
+    st.session_state.vmax = newHiVal
+
+    show_inv_results(st.session_state.plot_engine)
+
+
 def show_inv_results(plot_engine='plotly'):
     data = st.session_state.ert_data
     mgr = st.session_state.mgr
@@ -427,6 +464,9 @@ def show_inv_results(plot_engine='plotly'):
                   on_change=iteration_change,
                   key='iteration_select')
 
+    currIterIndex = optionMap[st.session_state.iteration_select]
+    rho_inv = np.asarray(mgr.inv.modelHistory[currIterIndex])
+
     SDLCol.selectbox("Download data",
                   options=['JSON', 
                            "Model Plot", "Data Pseudo-plot", "Forward Model Plot", 
@@ -445,6 +485,58 @@ def show_inv_results(plot_engine='plotly'):
         icon=":material/data_object:",
         on_click=no_redirect
         )
+
+    steps = 1000
+    pctileSteps = np.arange(steps)
+    pctileSteps = (pctileSteps / len(pctileSteps) * 100).tolist()
+    pctileSteps.append(pctileSteps[-1] + pctileSteps[1])
+    pctileSteps = np.round(pctileSteps, len(str(steps))-2)
+    print("SHOWINV")
+
+    cmapRange  = pctileSteps
+    cmapType = '%'
+    if hasattr(st.session_state, 'cmap_range_type') and '%' not in str(st.session_state.cmap_range_type).lower():
+        
+        logSteps = np.log10(np.logspace(np.log10(st.session_state.vmin), 
+                                        np.log10(st.session_state.vmax), num=steps))
+        cmapRange = 10 ** logSteps
+        cmapType = '$\\rho$'
+
+    cmapSliderCol, sliderType, cmapValCol = st.columns([70,10, 15], vertical_alignment='bottom')
+
+    sliderType.pills('Range Unit',
+                     options=['%', '$\\rho$'], 
+                     default=cmapType,
+                     key='cmap_range_type',
+                     on_change=update_cmap_range)
+
+
+    if not hasattr(st.session_state, 'vmin'):
+        minVal = st.session_state.vmin = np.percentile(rho_inv, 2)
+        maxVal = st.session_state.vmax = np.percentile(rho_inv, 98)
+    else:
+        minVal = st.session_state.vmin
+        maxVal = st.session_state.vmax
+
+    if cmapType != "%" and minVal <= 0:
+        minVal = 0
+
+    print("CMAP", cmapRange)
+    if minVal not in cmapRange:
+        minVal = cmapRange[np.argmin(cmapRange - minVal)]
+    if maxVal not in cmapRange:
+        maxVal = cmapRange[np.argmin(cmapRange - maxVal)]
+
+    cmapLims = cmapSliderCol.select_slider("Colormap Range",
+              #min_value=0.0,
+              #max_value=st.session_state.data_df['rhoa'].max(),
+              options = cmapRange,
+              value=[minVal, maxVal],
+              key='cmap_range',
+              on_change=update_cmap_range)
+
+    
+    cmapValCol.text(f'{np.percentile(rho_inv, cmapLims[0]):.2f} ohmm - {np.percentile(rho_inv, cmapLims[1]):.2f}')
 
     #jsonDict = {'test':"value"}
     #kwargDict = {
@@ -488,8 +580,7 @@ def show_inv_results(plot_engine='plotly'):
     pmesh = mgr.paraDomain
     model_xCenter = np.array([c.center().x() for c in pmesh.cells()])
     model_zCenter = np.array([c.center().y() for c in pmesh.cells()])
-    currIterIndex = optionMap[st.session_state.iteration_select]
-    rho_inv = np.asarray(mgr.inv.modelHistory[currIterIndex])
+
 
     mesh_x = np.array(mgr.mesh.cellCenters())[:, 0]
     mesh_z = np.array(mgr.mesh.cellCenters())[:, 1]
@@ -551,7 +642,8 @@ def show_inv_results(plot_engine='plotly'):
 
         # ── Colors from resistivity (log-scaled) ─────────────────────────────────────
         pctile = 5
-        norm = LogNorm(vmin=np.percentile(rho_inv, pctile), vmax=np.percentile(rho_inv, 100-pctile))
+        norm = LogNorm(vmin=st.session_state.vmin, 
+                       vmax=st.session_state.vmax)
         cmap = plt.get_cmap('nipy_spectral')
         rgba = cmap(norm(rho_inv))
         #rgba[:, 3] = alpha   # overwrite alpha channel with sensitivity-based transparency
@@ -569,8 +661,8 @@ def show_inv_results(plot_engine='plotly'):
         elif 'cont' in plot_type:
             ax.tricontourf(model_xCenter, model_zCenter, np.log10(rho_inv),
                         levels=18, cmap=cmap, 
-                        vmin=np.log10(np.percentile(rho_inv, pctile)),
-                        vmax=np.log10(np.percentile(rho_inv, 100-pctile)))
+                        vmin=st.session_state.vmin,
+                        vmax=st.session_state.vmax)
             ax.scatter(model_xCenter, model_zCenter, s=1, c='k')
 
         # Colorbar needs its own ScalarMappable since PolyCollection alpha is manual
@@ -768,53 +860,17 @@ def plot_resistivity_plotly(
     grid_logrho = interpolator(grid_X, grid_Z)
     grid_logrho = np.ma.filled(grid_logrho, np.nan)
  
-    vmin = np.log10(np.percentile(rho_inv, pctile))
-    vmax = np.log10(np.percentile(rho_inv, 100 - pctile))
+    vmin = st.session_state.vmin
+    vmax = st.session_state.vmax
+
+    if vmin == 0:
+        logVmin = np.log10(1e-2)
+    else:
+        logVmin = np.log10(vmin)
+    logVmax = np.log10(vmax)
     n_levels = 18
     plot_type = 'cont'
     fig = go.Figure()
- 
-    # Filled contour
-    fig.add_trace(
-        go.Contour(
-            x=grid_x,
-            y=grid_z,
-            z=grid_logrho,
-            connectgaps=False,  # never bridge across the NaN gap outside the hull
-            colorscale=default_colorscale,
-            zmin=vmin,
-            zmax=vmax,
-            contours=dict(
-                coloring="fill",
-                start=vmin,
-                end=vmax,
-                size=(vmax - vmin) / n_levels,
-            ),
-            line=dict(width=0),
-            colorbar=dict(
-                title=dict(text="Modeled Resistivity (Ω·m)"),
-                # Ticks in log-space, labeled with the actual resistivity values
-                tickvals=np.linspace(vmin, vmax, 6),
-                ticktext=[f"{10**t:,.1f}" for t in np.linspace(vmin, vmax, 6)],
-            ),
-            name="Resistivity",
-            hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
-        )
-    )
-
-    # ── Scatter of data/cell-center points (toggle via legend click) ────────
-    fig.add_trace(
-        go.Scatter(
-            x=model_xCenter,
-            y=model_zCenter,
-            mode="markers",
-            marker=dict(size=3, color="black"),
-            name="Data points",
-            showlegend=True,
-            visible='legendonly',
-            hoverinfo="skip",
-        )
-    )
  
     # ── Depth limit informed by sensitivity ──────────────────────────────────
     cellCenters = np.array(mgr.paraDomain.cellCenters())
@@ -832,28 +888,7 @@ def plot_resistivity_plotly(
     yPad = depth_limit * 0.05
     minY = topo_min - (depth_limit - yPad)
     maxY = sensors[:, 2].max() + yPad
-    # ── Ground-surface line + sensor markers ─────────────────────────────────
-    fig.add_trace(
-        go.Scatter(
-            x=sensors[:, 0],
-            y=sensors[:, 2],
-            mode="lines",
-            line=dict(color="green", width=2),
-            name="Surface",
-            hoverinfo="skip",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=sensors[:, 0],
-            y=sensors[:, 1],
-            mode="markers",
-            marker=dict(symbol="triangle-down", color="black", size=10, line=dict(width=0)),
-            name="Sensors",
-            hoverinfo="skip",
-        )
-    )
- 
+
     # ── Convex-hull-based lower boundary of the well-resolved region ────────
     pts = np.column_stack((mid_x, pseudo_z))
     hull = ConvexHull(pts)
@@ -896,22 +931,92 @@ def plot_resistivity_plotly(
     poly_y = yTop + yBottom[::-1]
  
     minY = min(yTop) - yPad
- 
-    # Added LAST so it draws on top of everything else, same as zorder=1000.
+
+    # Filled contour
     fig.add_trace(
-        go.Scatter(
-            x=poly_x,
-            y=poly_y,
-            mode="lines",
+        go.Contour(
+            x=grid_x,
+            y=grid_z,
+            z=grid_logrho,
+            connectgaps=False,  # never bridge across the NaN gap outside the hull
+            colorscale=default_colorscale,
+            zmin=logVmin,
+            zmax=logVmax,
+            contours=dict(
+                coloring="fill",
+                start=logVmin,
+                end=logVmax,
+                size=(logVmax - logVmin) / n_levels,
+            ),
             line=dict(width=0),
-            fill="toself",
-            fillcolor="white",
-            hoverinfo="skip",
-            showlegend=False,
+            colorbar=dict(
+                title=dict(text="Modeled Resistivity (Ω·m)"),
+                # Ticks in log-space, labeled with the actual resistivity values
+                tickvals=np.linspace(logVmin, logVmax, 6),
+                ticktext=[f"{10**t:,.1f}" for t in np.linspace(logVmin, logVmax, 6)],
+            ),
+            name="Resistivity",
+            hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
         )
     )
 
-    n_levels_options = [1, 2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,40,50,75,100]
+    # ── Scatter of data/cell-center points (toggle via legend click) ────────
+    fig.add_trace(
+        go.Scatter(
+            name="Data points",
+            x=model_xCenter,
+            y=model_zCenter,
+            mode="markers",
+            marker=dict(size=2, color="black"),
+            showlegend=True,
+            visible='legendonly',
+            hoverinfo="skip",
+        )
+    )
+ 
+
+    # Clip corners using white overlay
+    fig.add_trace(
+            go.Scatter(
+                name='Clipped Corners',
+                x=poly_x,
+                y=poly_y,
+                mode="lines",
+                line=dict(width=0),
+                fill="toself",
+                fillcolor="white",
+                hoverinfo="skip",
+                #visible='legendonly',
+                showlegend=True,
+            )
+        )
+
+    # Add surface line
+    fig.add_trace(
+        go.Scatter(
+            name="Surface",
+            x=sensors[:, 0],
+            y=sensors[:, 2],
+            mode="lines",
+            line=dict(color="green", width=4),
+            hoverinfo="skip",
+        )
+    )
+
+    # Add Electrode locaions
+    fig.add_trace(
+        go.Scatter(
+            name="Electrode Locations",
+            x=sensors[:, 0],
+            y=sensors[:, 1],
+            mode="markers",
+            marker=dict(symbol="triangle-down", color="black", size=12, line=dict(width=0)),
+            hoverinfo="skip",
+        )
+    )
+
+    # Slider for number of contours
+    n_levels_options = [1, 2,3,4,5,6,7,8,9,10,12,15,18,20,25,30,40,50,75,100,500]
     fig.update_layout(
         sliders=[
             dict(
@@ -940,10 +1045,11 @@ def plot_resistivity_plotly(
             )
         ]
     )
- 
+
+    # Colormap options
     fig.update_layout(
         updatemenus=[
-            # Menu 2: Colorscale dropdown
+            # Colorscale dropdown
             dict(
                 type="dropdown",
                 direction="up",
@@ -956,29 +1062,35 @@ def plot_resistivity_plotly(
                     dict(
                         label=name,
                         method="restyle",
-                        args=[{"colorscale": name}, [0, 1]],  # apply to both traces now
+                        args=[{"colorscale": name}, [0]],  # apply to both traces now
                     )
                     for name in PLOTLY_CMAPS
                 ],
             ),
         ]
     )
+
+    # Put x axis labels on top
     fig.update_layout(
-        xaxis=dict(side="top")
-    )
- 
-    # ── Titles, labels, and axis limits ──────────────────────────────────────
+        xaxis=dict(side="top"))
+
+    # Titles and template
     fig.update_layout(
-        title="c) Inverted Resistivity Model",
+        title="Inverted Resistivity Model",
         xaxis_title="Distance (m)",
         yaxis_title="Elevation (m)",
         template="plotly_white",
         legend=dict(orientation="h", y=-0.15),
-        margin=dict(t=90, b=60, l=60, r=40),
-    )
+        margin=dict(t=90, b=60, l=60, r=40))
+
+    # Axis limits
     fig.update_xaxes(range=[nodes[:, 0].min(), nodes[:, 0].max()])
+    if all(x == 0 for x in sensors[:, 2]):
+        maxY = 0
     fig.update_yaxes(range=[minY, maxY])
- 
+
+    fig.data[-3].legendrank = 3000
+
     return fig
 
 
