@@ -161,7 +161,8 @@ class StreamlitLogger(io.StringIO):
 
 def on_invert_data():
     st.toast("Inverting data")
-
+    st.session_state.vmin = st.session_state.vmax = None
+    st.session_state.pct_min = st.session_state.pct_max = None
     data = st.session_state.ert_data
     dataDF = st.session_state.data_df
     #data['k'] = ert.geometricFactors(data)
@@ -431,15 +432,37 @@ def update_cmap_range():
     newLowVal = st.session_state.cmap_range[0]
     newHiVal = st.session_state.cmap_range[1]
     if rangeType != "%":
-        prevLowPctile = st.session_state.cmap_range[0]
-        prevHiPctile = st.session_state.cmap_range[1]
+        newLowPctile = st.session_state.cmap_range[0]
+        newHiPctile = st.session_state.cmap_range[1]
 
-        newLowVal = np.percentile(np.asarray(rho_inv), prevLowPctile)
-        newHiVal = np.percentile(np.asarray(rho_inv), prevHiPctile)
+        newLowVal = np.percentile(np.asarray(rho_inv), newLowPctile)
+        newHiVal = np.percentile(np.asarray(rho_inv), newHiPctile)
+    else:
+        newLowVal = st.session_state.cmap_range[0]
+        newHiVal = st.session_state.cmap_range[1]
+        
+        # Get percentile of value
+        rho_inv = rho_inv.flatten()
+        rho_inv = np.sort(rho_inv)
 
+        pctileRange = (np.arange(1000)/1000) * 100
+        
+        lowInd = np.argmin(np.abs(rho_inv - newLowVal))
+        newLowPctile = lowInd / len(rho_inv)
+        newLowPctile = np.argmin(np.abs(pctileRange - newLowPctile))
+        newLowPctile = pctileRange[newLowPctile]
+
+        hiInd = np.argmin(np.abs(rho_inv - newHiVal))
+        newHiPctile = hiInd / len(rho_inv)
+        newHiPctile = np.argmin(np.abs(pctileRange - newHiPctile))
+        newHiPctile = pctileRange[newHiPctile]
+
+    print("NLV< NHV", newLowVal, newHiVal)
     st.session_state.vmin = newLowVal
     st.session_state.vmax = newHiVal
 
+    st.session_state.pct_min = newLowPctile
+    st.session_state.pct_max = newHiPctile
     show_inv_results(st.session_state.plot_engine)
 
 
@@ -491,41 +514,60 @@ def show_inv_results(plot_engine='plotly'):
     pctileSteps = (pctileSteps / len(pctileSteps) * 100).tolist()
     pctileSteps.append(pctileSteps[-1] + pctileSteps[1])
     pctileSteps = np.round(pctileSteps, len(str(steps))-2)
-    print("SHOWINV")
 
-    cmapRange  = pctileSteps
+    cmapRange = pctileSteps
     cmapType = '%'
     if hasattr(st.session_state, 'cmap_range_type') and '%' not in str(st.session_state.cmap_range_type).lower():
-        
+        print("LOGGGGG")
         logSteps = np.log10(np.logspace(np.log10(st.session_state.vmin), 
                                         np.log10(st.session_state.vmax), num=steps))
         cmapRange = 10 ** logSteps
         cmapType = '$\\rho$'
 
-    cmapSliderCol, sliderType, cmapValCol = st.columns([70,10, 15], vertical_alignment='bottom')
-
+    cmapSliderCol, sliderType, cmapValCol = st.columns([70, 10, 15], vertical_alignment='bottom')
+    print("CMAPRANGE", cmapRange)
     sliderType.pills('Range Unit',
-                     options=['%', '$\\rho$'], 
+                     options=['%', '$\\rho$'],
                      default=cmapType,
                      key='cmap_range_type',
                      on_change=update_cmap_range)
 
+    clip_pctile = 2
+    # Set units and update range
+    flatRhoInv = rho_inv.flatten()
 
-    if not hasattr(st.session_state, 'vmin'):
-        minVal = st.session_state.vmin = np.percentile(rho_inv, 2)
-        maxVal = st.session_state.vmax = np.percentile(rho_inv, 98)
+    if not hasattr(st.session_state, 'vmin') or st.session_state.vmin is None:
+        print("NOVMIN")
+        minPctile = clip_pctile
+        maxPctile = 100 - clip_pctile
+
+        minRho = st.session_state.vmin = np.percentile(flatRhoInv, minPctile)
+        maxRho = st.session_state.vmax = np.percentile(flatRhoInv, maxPctile)         
     else:
-        minVal = st.session_state.vmin
-        maxVal = st.session_state.vmax
+        print("VMIN")
+        minRho = st.session_state.vmin
+        maxRho = st.session_state.vmax
+        
+        minPctile = np.argmin(np.abs(np.sort(flatRhoInv) - minRho)) / flatRhoInv.shape[0]
+        maxPctile = np.argmin(np.abs(np.sort(flatRhoInv) - maxRho)) / flatRhoInv.shape[0]
+        
+        minPctile = pctileSteps[np.argmin(np.abs(pctileSteps - minPctile))]
+        maxPctile = pctileSteps[np.argmin(np.abs(pctileSteps - maxPctile))]
 
-    if cmapType != "%" and minVal <= 0:
-        minVal = 0
 
-    print("CMAP", cmapRange)
-    if minVal not in cmapRange:
-        minVal = cmapRange[np.argmin(cmapRange - minVal)]
-    if maxVal not in cmapRange:
-        maxVal = cmapRange[np.argmin(cmapRange - maxVal)]
+    print("MINMAX, PCTILE-Val", minPctile, maxPctile, minRho, maxRho)
+    if '%' in str(st.session_state.cmap_range_type):
+        minVal = minPctile
+        maxVal = maxPctile
+    else:
+        minVal = minRho
+        maxVal = maxRho
+    print(minVal, maxVal)
+    st.session_state.vmin = minRho
+    st.session_state.vmax = maxRho
+    
+    st.session_state.pct_min = minPctile
+    st.session_state.pct_max = maxPctile
 
     cmapLims = cmapSliderCol.select_slider("Colormap Range",
               #min_value=0.0,
