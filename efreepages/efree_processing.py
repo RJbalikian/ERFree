@@ -1,5 +1,6 @@
 import json
 import os
+import pathlib
 import tempfile
 import traceback
 
@@ -122,21 +123,21 @@ def main():
                     or np.nansum(np.abs(st.session_state.data_df['rhoa'])) == 0:
                     rCol = 'r'
                 minRhoVal = np.asarray(st.session_state.ert_data[rCol]).min()
-                print(minRhoVal, minRhoVal<0, st.session_state.auto_neg_remove)
+
                 if minRhoVal < 0 and st.session_state.auto_neg_remove:
                     minRhoVal = 0
                 maxRhoVal = np.asarray(st.session_state.ert_data[rCol]).max()
 
             minRhoCol.number_input("Min $$\\rho_{apparent}$$",
                                    key='min_rho',
-                                   value=minRhoVal, 
+                                   #value=minRhoVal, 
                                    disabled=disableAppRhoRange,
                                    on_change=rho_range_update)
 
             maxRhoCol.number_input('Max $$\\rho_{apparent}$$',
                                    disabled=disableAppRhoRange,
                                    key='max_rho',
-                                   value=maxRhoVal,
+                                   #value=maxRhoVal,
                                    on_change=rho_range_update)
 
             # Data Level % Err Threshold
@@ -174,6 +175,7 @@ def main():
         if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
             show_data_preview(st.session_state.ert_data)
         pass
+
 
 class StreamlitLogger(io.StringIO):
     def __init__(self, placeholder):
@@ -264,11 +266,13 @@ def on_data_upload():
     hasTopo = False
     if st.session_state.data_uploader is not None:
         st.session_state.data_file_name = st.session_state.data_uploader.name
+        suffix = pathlib.Path(st.session_state.data_uploader.name).suffix
+        
         with tempfile.TemporaryDirectory() as tmpdir:
-            data_path = os.path.join(tmpdir, "data.txt")
+            data_path = os.path.join(tmpdir, f"data{suffix}")
             with open(data_path, "wb") as f:
                 f.write(st.session_state.data_uploader.getbuffer())
-            print(data_path)
+
             try:
                 data = ert.load(data_path)
             except Exception:
@@ -288,9 +292,24 @@ def on_data_upload():
                     return
 
             if data is None:
-                print("NONE")
                 return
 
+            try:
+                with open(data_path, 'r') as df:
+                    dfList = df.readlines()
+
+                pName = None
+                if 'txt' in suffix:
+                    for line in dfList:
+                        if "Project name" in line:
+                            pName = line.split(':')[1].strip()
+                    st.session_state.project_name = pName
+                elif 'dat' in suffix:
+                    pName = dfList[0].split(' ')
+
+                st.session_state.project_name = pName
+            except Exception:
+                pass
             # Try to extract elevation
             hasTopo = False
             if data.sensors()[:,2].all() == 0:
@@ -324,24 +343,23 @@ def on_data_upload():
         st.session_state.pre_data = st.session_state.ert_data = data
         data['k'] = ert.geometricFactors(data)
 
-        #fig, ax = plt.subplots()
-        #ax.scatter(data.sensors()[:, 0], data.sensors()[:, 1])
-        #st.session_state.data_preview_container.pyplot(fig)
-
         st.session_state.ert_data = st.session_state.ert_data_in = data
 
         dataDF = get_df_from_data(data)
         if 'rhoa' not in dataDF.columns or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa'])) == 0:
             dataDF['rhoa'] = dataDF['r'] * data['k']
             data['rhoa'] = dataDF['rhoa']
+        st.session_state.min_rho = np.nanmin(dataDF['rhoa'])
+        st.session_state.max_rho = np.nanmax(dataDF['rhoa'])
         st.session_state.data_df = st.session_state.data_df_in  = dataDF
         st.session_state.data_df = st.session_state.data_df_in = calculate_data_level_errors()
-        st.session_state.min_rho = np.asarray(data['rhoa']).min()
-        if st.session_state.auto_neg_remove and np.asarray(data['rhoa']).min() < 0:
-            st.session_state.min_rho = 0
-        st.session_state.max_rho = np.asarray(data['rhoa']).max()
+        #st.session_state.min_rho = np.asarray(data['rhoa']).min()
+        #if st.session_state.auto_neg_remove and np.asarray(data['rhoa']).min() < 0:
+        #    st.session_state.min_rho = 0
+        #st.session_state.max_rho = np.asarray(data['rhoa']).max()
 
     #show_data_preview(data)
+    rho_range_update()
 
 
 def show_data_preview(data):
@@ -392,6 +410,10 @@ def update_used_data(dataDF):
 
     st.session_state.data_df = dataDF
     #st.dataframe(st.session_state.data_df)
+
+    st.session_state.min_rho = np.nanmin(dataDF[dataDF['Use']]['rhoa'])
+    st.session_state.max_rho = np.nanmax(dataDF[dataDF['Use']]['rhoa'])
+
     return dataDF
 
 
@@ -465,38 +487,40 @@ def update_cmap_range():
 
     newLowVal = st.session_state.cmap_range[0]
     newHiVal = st.session_state.cmap_range[1]
-    if rangeType != "%":
+    #print("NLVNHV", newLowVal, newHiVal)
+    if "%" in rangeType:
         newLowPctile = st.session_state.cmap_range[0]
         newHiPctile = st.session_state.cmap_range[1]
+        flatRhoInv = np.asarray(rho_inv).flatten()
 
-        newLowVal = np.percentile(np.asarray(rho_inv), newLowPctile)
-        newHiVal = np.percentile(np.asarray(rho_inv), newHiPctile)
-    else:
-        newLowVal = st.session_state.cmap_range[0]
-        newHiVal = st.session_state.cmap_range[1]
+        st.session_state.vmin = np.percentile(np.asarray(flatRhoInv), newLowPctile)
+        st.session_state.vmax = np.percentile(np.asarray(flatRhoInv), newHiPctile)
+    #else:
+    #    newLowVal = st.session_state.cmap_range[0]
+    #    newHiVal = st.session_state.cmap_range[1]
         
-        # Get percentile of value
-        rho_inv = rho_inv.flatten()
-        rho_inv = np.sort(rho_inv)
+    #    # Get percentile of value
+    #    rho_inv = rho_inv.flatten()
+    #    rho_inv = np.sort(rho_inv)
 
-        pctileRange = (np.arange(1000)/1000) * 100
+    #    pctileRange = (np.arange(1000)/1000) * 100
         
-        lowInd = np.argmin(np.abs(rho_inv - newLowVal))
-        newLowPctile = lowInd / len(rho_inv)
-        newLowPctile = np.argmin(np.abs(pctileRange - newLowPctile))
-        newLowPctile = pctileRange[newLowPctile]
+    #    lowInd = np.argmin(np.abs(rho_inv - newLowVal))
+    #    newLowPctile = lowInd / len(rho_inv)
+    #    newLowPctile = np.argmin(np.abs(pctileRange - newLowPctile))
+    #    newLowPctile = pctileRange[newLowPctile]
 
-        hiInd = np.argmin(np.abs(rho_inv - newHiVal))
-        newHiPctile = hiInd / len(rho_inv)
-        newHiPctile = np.argmin(np.abs(pctileRange - newHiPctile))
-        newHiPctile = pctileRange[newHiPctile]
+    #    hiInd = np.argmin(np.abs(rho_inv - newHiVal))
+    #    newHiPctile = hiInd / len(rho_inv)
+    #    newHiPctile = np.argmin(np.abs(pctileRange - newHiPctile))
+    #    newHiPctile = pctileRange[newHiPctile]
 
-    print("NLV< NHV", newLowVal, newHiVal)
-    st.session_state.vmin = newLowVal
-    st.session_state.vmax = newHiVal
+    #print("NLV< NHV", newLowVal, newHiVal)
+    #st.session_state.vmin = newLowVal
+    #st.session_state.vmax = newHiVal
 
-    st.session_state.pct_min = newLowPctile
-    st.session_state.pct_max = newHiPctile
+    #st.session_state.pct_min = newLowPctile
+    #st.session_state.pct_max = newHiPctile
     show_inv_results(st.session_state.plot_engine)
 
 
@@ -552,7 +576,7 @@ def show_inv_results(plot_engine='plotly'):
     cmapRange = pctileSteps
     cmapType = '%'
     if hasattr(st.session_state, 'cmap_range_type') and '%' not in str(st.session_state.cmap_range_type).lower():
-        print("LOGGGGG")
+
         logSteps = np.log10(np.logspace(np.log10(st.session_state.vmin), 
                                         np.log10(st.session_state.vmax), num=steps))
         cmapRange = 10 ** logSteps
@@ -560,13 +584,20 @@ def show_inv_results(plot_engine='plotly'):
 
     cmapSliderCol, sliderType, cmapValCol = st.columns([70, 10, 15], vertical_alignment='bottom')
 
-    st.checkbox('HTEM Colors', value=True,
+    use_htem = True
+    if hasattr(st.session_state, 'use_htem_colors'):
+        if not st.session_state.use_htem_colors:
+           use_htem = False
+
+    st.checkbox('HTEM Colors',
+                value=use_htem,
+                on_change=htem_clrs_update,
                 key='use_htem_colors')
 
     sliderType.pills('Range Unit',
-                     options=['%', '$\\rho$'],
+                     options=['%'],# '$\\rho$'],
                      default=cmapType,
-                     disabled=st.session_state.use_htem_colors,
+                     disabled=True, #st.session_state.use_htem_colors,
                      key='cmap_range_type',
                      on_change=update_cmap_range)
 
@@ -575,32 +606,28 @@ def show_inv_results(plot_engine='plotly'):
     flatRhoInv = rho_inv.flatten()
 
     if not hasattr(st.session_state, 'vmin') or st.session_state.vmin is None:
-        print("NOVMIN")
         minPctile = clip_pctile
         maxPctile = 100 - clip_pctile
 
         minRho = st.session_state.vmin = np.percentile(flatRhoInv, minPctile)
         maxRho = st.session_state.vmax = np.percentile(flatRhoInv, maxPctile)         
     else:
-        print("VMIN")
         minRho = st.session_state.vmin
         maxRho = st.session_state.vmax
-        
-        minPctile = np.argmin(np.abs(np.sort(flatRhoInv) - minRho)) / flatRhoInv.shape[0]
-        maxPctile = np.argmin(np.abs(np.sort(flatRhoInv) - maxRho)) / flatRhoInv.shape[0]
+
+        minPctile = 100 * (np.argmin(np.abs(np.sort(flatRhoInv) - minRho)) / flatRhoInv.shape[0])
+        maxPctile = 100 * (np.argmin(np.abs(np.sort(flatRhoInv) - maxRho)) / flatRhoInv.shape[0])
         
         minPctile = pctileSteps[np.argmin(np.abs(pctileSteps - minPctile))]
         maxPctile = pctileSteps[np.argmin(np.abs(pctileSteps - maxPctile))]
 
-
-    print("MINMAX, PCTILE-Val", minPctile, maxPctile, minRho, maxRho)
     if '%' in str(st.session_state.cmap_range_type):
         minVal = minPctile
         maxVal = maxPctile
     else:
         minVal = minRho
         maxVal = maxRho
-    print(minVal, maxVal)
+
     st.session_state.vmin = minRho
     st.session_state.vmax = maxRho
     
@@ -1004,6 +1031,7 @@ def plot_resistivity_plotly(
 
     tickLevels = 8
     tvals = np.linspace(logVmin, logVmax, tickLevels)
+    cscale = 'jet'
     #cSize = (logVmax - logVmin) / n_levels
     if st.session_state.use_htem_colors:
         logVmin = np.log10(10)
@@ -1011,6 +1039,7 @@ def plot_resistivity_plotly(
         #tickLevels = 40
         tvals = np.linspace(logVmin, logVmax, tickLevels)
         n_levels = 100
+        cscale = default_colorscale
     cSize = (logVmax - logVmin) / n_levels
 
     # Filled contour
@@ -1021,7 +1050,7 @@ def plot_resistivity_plotly(
             z=grid_logrho,
             customdata=grid_rho,          # same shape as z -- linear-space values
             connectgaps=False,  # never bridge across the NaN gap outside the hull
-            colorscale=default_colorscale,
+            colorscale=cscale,
             zmin=logVmin,
             zmax=logVmax,
             contours=dict(
@@ -1072,6 +1101,7 @@ def plot_resistivity_plotly(
             )
         )
 
+    # Cleans up any "leak" of contouring above surface
     fillLineX = sensors[:, 0].copy().tolist()
     fillLineX.append(fillLineX[-1])
     fillLineX.append(fillLineX[0])
@@ -1080,9 +1110,10 @@ def plot_resistivity_plotly(
     fillLineY.append(max(fillLineY))
     fillLineY.append(max(fillLineY))
 
+    # Add surface clip
     fig.add_trace(
             go.Scatter(
-                name='Clipped Corners',
+                name='Surface Clip',
                 x=fillLineX,
                 y=fillLineY,
                 mode="lines",
@@ -1137,9 +1168,9 @@ def plot_resistivity_plotly(
                         method="restyle",
                         args=[
                             {
-                                "contours.start": vmin,
-                                "contours.end": vmax,
-                                "contours.size": (vmax - vmin) / n,
+                                "contours.start": logVmin,
+                                "contours.end": logVmax,
+                                "contours.size": (logVmax - logVmin) / n,
                             },
                             [0],  # trace 0 = Contour
                         ],
@@ -1191,12 +1222,15 @@ def plot_resistivity_plotly(
     fig.update_xaxes(range=[nodes[:, 0].min(), nodes[:, 0].max()])
     if all(x == 0 for x in sensors[:, 2]):
         maxY = 0
-    print("MINMAXXXXXXXXXXX", minY, maxY)
     fig.update_yaxes(range=[minY, maxY])
 
     fig.data[-3].legendrank = 3000
 
     return fig
+
+
+def htem_clrs_update():
+    return
 
 
 # JSON File
@@ -1206,6 +1240,13 @@ def convert_to_json():
     mgr = st.session_state.mgr
     pmesh = mgr.paraDomain
     inv = st.session_state.inv
+    data = st.session_state.ert_data
+
+    elecLocDict = {'X':np.asarray(data.sensors()[:, 0]).tolist(),
+                   'Y':np.asarray(data.sensors()[:, 1]).tolist(),
+                   'Z':np.asarray(data.sensors()[:, 2]).tolist()}
+
+    minElecSpacing = np.nanmin(np.diff(np.asarray(data.sensors()[:, 0])))
 
     rCol = 'rhoa'
     if 'rhoa' not in dataDF or dataDF['rhoa'].isnull().all() or np.nansum(np.abs(dataDF['rhoa'])) == 0:
@@ -1225,11 +1266,12 @@ def convert_to_json():
     modelDict = dict(zip(iterations, np.asarray(allModels).tolist()))
 
     jsonDict = {"Profile_Name": st.session_state.data_file_name,
-                "Project_Name": None,
+                "Project_Name": st.session_state.project_name,
                 "XYZ": None,
                 "Array": None,
                 "Spread": None,
-                "Min_Elec_Spacing": None,
+                "Electrode_Locations":elecLocDict,
+                "Min_Elec_Spacing": minElecSpacing,
                 'Data_Locations': dataDF[['pseudoX', 'pseudoZ']].to_dict(),
                 "Data_Observed": dataDF[rCol].to_numpy().tolist(),
                 "Data_Forward": np.asarray(mgr.inv.response).tolist(),
