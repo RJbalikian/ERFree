@@ -186,7 +186,6 @@ class StreamlitLogger(io.StringIO):
         return len(s)
 
 
-
 def on_invert_data():
     st.toast("Inverting data")
     st.session_state.vmin = st.session_state.vmax = None
@@ -215,7 +214,7 @@ def on_invert_data():
     data.remove(remList)
 
     mgr = ert.ERTManager(data)
-    sensors = np.array(data.sensors())
+    sensors = np.array(data.sensors()).copy()
 
     a = np.array(data['a'], dtype=int)   # current electrode +
     b = np.array(data['b'], dtype=int)   # current electrode -
@@ -236,10 +235,16 @@ def on_invert_data():
                     quality=34
                     )
 
+        print("SETTING UP ERT Manager")
         mgr = ert.ERTManager(data)
         st.session_state.mgr = mgr
+        print("STARTING INVERSION NOW")
         inv = mgr.invert(mesh=mesh, maxIter=5, verbose=True)
         st.session_state.inv = inv
+
+    # Reset sensors to prior to inversion (keeps Z in third column)
+    for i, s in enumerate(sensors):
+        data.setSensorPosition(i, pg.Pos(s[0], s[1], s[2]))
 
     obs = np.asarray(mgr.inv.dataVals)
     calc = np.asarray(mgr.inv.response)
@@ -306,6 +311,7 @@ def on_data_upload():
                         topo = pd.read_csv(data_path, skiprows=topoNum, sep=r'\s', nrows=int(dataRead[topoNum])-1)
                         topo = topo.astype(float)
                     st.session_state.topo = topo
+
                     # Interpolate elevation data to sensor x-locations
                     topoInterp = np.interp(data.sensors()[:,0].tolist(), 
                                            topo.index.tolist(), topo.values.flatten().tolist())
@@ -557,7 +563,6 @@ def show_inv_results(plot_engine='plotly'):
     st.checkbox('HTEM Colors', value=True,
                 key='use_htem_colors')
 
-    print("CMAPRANGE", cmapRange)
     sliderType.pills('Range Unit',
                      options=['%', '$\\rho$'],
                      default=cmapType,
@@ -612,23 +617,6 @@ def show_inv_results(plot_engine='plotly'):
               on_change=update_cmap_range)
 
     cmapValCol.text(f'{np.percentile(rho_inv, cmapLims[0]):.2f} ohmm - {np.percentile(rho_inv, cmapLims[1]):.2f}')
-
-    #jsonDict = {'test':"value"}
-    #kwargDict = {
-    #    'JSON':{'label': ' JSON',
-    #            'data': jsonDict,
-    #            'file_name': fname,
-    #            'mime': 'application/json'
-    #            }
-    #}
-    #dlKwargs = kwargDict[st.session_state.dl_type_select]
-    #st.download_button(type='tertiary',
-    #                   **dlKwargs
-    #                   )
-    #st.download_button('3x Plot')
-    #st.download_button('Model Plot')
-
-
 
     # ── Extract sensor positions ─────────────────────────────────────────────────
     sensors = np.array(data.sensors())  # shape (N, 2) → x, z columns
@@ -758,14 +746,14 @@ def show_inv_results(plot_engine='plotly'):
 
         # Don't show deeper than ~100 m even if a few cells claim coverage beyond that,
         # but don't force 100 m if sensitivity runs out sooner (shallow line, thin mesh, etc.)
-        topo_min = sensors[:, 1].min()
+        topo_min = sensors[:, 2].min()
         depth_limit = min(sens_depth_limit, max_depth_cap)  # less negative of the two = shallower cutoff wins if sensitivity is worse than 100 m
         yPad = depth_limit * 0.05
         minY = topo_min - (depth_limit - yPad)
-        maxY = sensors[:, 1].max() + yPad
+        maxY = sensors[:, 2].max() + yPad
 
-        ax.plot(sensors[:, 0], sensors[:, 1], c='green', linewidth=2)
-        ax.scatter(sensors[:, 0], sensors[:, 1], c='k', marker='v', s=10, edgecolors='None', zorder=100)
+        ax.plot(sensors[:, 0], sensors[:, 2], c='green', linewidth=2)
+        ax.scatter(sensors[:, 0], sensors[:, 2], c='k', marker='v', s=10, edgecolors='None', zorder=100)
 
         # Sort by x
         pts = np.column_stack((mid_x, pseudo_z))
@@ -796,13 +784,13 @@ def show_inv_results(plot_engine='plotly'):
                 fill_value=np.nan
                 )
 
-        sensorTops = sensors[:, 1]
+        sensorTops = sensors[:, 2]
         sensorBottoms = bottom_fun(sensors[:, 0])
         xFill = sensors[:, 0]
         xFill = xFill.tolist()
         xFill.insert(0, min(nodes[:, 0]))
         xFill.append(max(nodes[:, 0]))
-        yTop = sensors[:, 1] + sensorBottoms
+        yTop = sensors[:, 2] + sensorBottoms
         yTop[np.isnan(yTop)] = max(nodes[:, 1])
         yTop = yTop.tolist()
         yTop.insert(0, max(nodes[:, 1]))
@@ -936,6 +924,7 @@ def plot_resistivity_plotly(
     grid_X, grid_Z = np.meshgrid(grid_x, grid_z)
     grid_logrho = interpolator(grid_X, grid_Z)
     grid_logrho = np.ma.filled(grid_logrho, np.nan)
+    grid_rho = 10 ** grid_logrho
  
     vmin = st.session_state.vmin
     vmax = st.session_state.vmax
@@ -986,15 +975,18 @@ def plot_resistivity_plotly(
     bottom_fun = interp1d(
         lower_hull[:, 0], lower_hull[:, 1], bounds_error=False, fill_value=np.nan
     )
- 
-    sensorTops = sensors[:, 1]
+
+    sensorTops = sensors[:, 2]
     sensorBottoms = bottom_fun(sensors[:, 0])
  
     xFill = sensors[:, 0].tolist()
     xFill.insert(0, min(nodes[:, 0]))
     xFill.append(max(nodes[:, 0]))
- 
-    yTop = sensors[:, 1] + sensorBottoms
+    halfIndex = len(xFill) // 2
+    xFill[:halfIndex] = xFill[:halfIndex] - 2 * np.nanmedian(np.diff(xFill[:halfIndex]))
+    xFill[halfIndex:] = xFill[halfIndex:] + 2 * np.nanmedian(np.diff(xFill[halfIndex:]))
+
+    yTop = sensors[:, 2] + sensorBottoms
     yTop[np.isnan(yTop)] = max(nodes[:, 1])
     yTop = yTop.tolist()
     yTop.insert(0, max(nodes[:, 1]))
@@ -1006,7 +998,8 @@ def plot_resistivity_plotly(
     # walk forward along the top boundary, then back along the (flat) bottom.
     poly_x = xFill + xFill[::-1]
     poly_y = yTop + yBottom[::-1]
- 
+
+
     minY = min(yTop) - yPad
 
     tickLevels = 8
@@ -1026,6 +1019,7 @@ def plot_resistivity_plotly(
             x=grid_x,
             y=grid_z,
             z=grid_logrho,
+            customdata=grid_rho,          # same shape as z -- linear-space values
             connectgaps=False,  # never bridge across the NaN gap outside the hull
             colorscale=default_colorscale,
             zmin=logVmin,
@@ -1044,11 +1038,11 @@ def plot_resistivity_plotly(
                 ticktext=[f"{10**t:,.0f}" for t in tvals],
             ),
             name="Resistivity",
-            hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{z:.3f} (log10)<extra></extra>",
+            hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>ρ=%{customdata:,.3f} Ω·m<extra></extra>",
         )
     )
 
-    # ── Scatter of data/cell-center points (toggle via legend click) ────────
+    # Plot data points
     fig.add_trace(
         go.Scatter(
             name="Data points",
@@ -1078,6 +1072,29 @@ def plot_resistivity_plotly(
             )
         )
 
+    fillLineX = sensors[:, 0].copy().tolist()
+    fillLineX.append(fillLineX[-1])
+    fillLineX.append(fillLineX[0])
+
+    fillLineY = sensors[:, 2].copy().tolist()
+    fillLineY.append(max(fillLineY))
+    fillLineY.append(max(fillLineY))
+
+    fig.add_trace(
+            go.Scatter(
+                name='Clipped Corners',
+                x=fillLineX,
+                y=fillLineY,
+                mode="lines",
+                line=dict(width=0),
+                fill="toself",
+                fillcolor="white",
+                hoverinfo="skip",
+                #visible='legendonly',
+                showlegend=False,
+            )
+        )
+
     # Add surface line
     fig.add_trace(
         go.Scatter(
@@ -1090,12 +1107,12 @@ def plot_resistivity_plotly(
         )
     )
 
-    # Add Electrode locaions
+    # Add Electrode locations
     fig.add_trace(
         go.Scatter(
             name="Electrode Locations",
             x=sensors[:, 0],
-            y=sensors[:, 1],
+            y=sensors[:, 2],
             mode="markers",
             marker=dict(symbol="triangle-down", color="black", size=12, line=dict(width=0)),
             hoverinfo="skip",
@@ -1174,6 +1191,7 @@ def plot_resistivity_plotly(
     fig.update_xaxes(range=[nodes[:, 0].min(), nodes[:, 0].max()])
     if all(x == 0 for x in sensors[:, 2]):
         maxY = 0
+    print("MINMAXXXXXXXXXXX", minY, maxY)
     fig.update_yaxes(range=[minY, maxY])
 
     fig.data[-3].legendrank = 3000
