@@ -626,24 +626,42 @@ def show_inv_results(plot_engine='plotly'):
     currIterIndex = optionMap[st.session_state.iteration_select]
     rho_inv = np.asarray(mgr.inv.modelHistory[currIterIndex])
 
-    SDLCol.selectbox("Download data",
+    dlType = SDLCol.selectbox("Download data",
                   options=['JSON', 
-                           "Model Plot", "Data Pseudo-plot", "Forward Model Plot", 
-                           "VTK",
-                           "XYZ"],
+                           "Model Plot",
+                           ],
                   key="dl_type_select"
                   )
 
-    jsonText = convert_to_json()
+    if dlType == "JSON":
+        jsonText = convert_to_json()
 
-    DLBCol.download_button(
-        label="JSON",
-        data=jsonText,
-        file_name=f"INV_{st.session_state.data_file_name}.json",
-        mime="application/json",
-        icon=":material/data_object:",
-        on_click=no_redirect
-        )
+        DLBCol.download_button(
+            label="JSON",
+            data=jsonText,
+            file_name=f"INV_{st.session_state.data_file_name}.json",
+            mime="application/json",
+            icon=":material/data_object:",
+            on_click=no_redirect
+            )
+    
+    elif dlType == "Model Plot":
+        try:
+            img_bytes = st.session_state.model_fig.to_image(format="png",
+                                 width=plotly_width,
+                                 height=plotly_height,
+                                     scale=2)
+        except Exception:
+            traceback.print_exc()
+
+        DLBCol.download_button(
+            label="Model Plot",
+            data=img_bytes,
+            file_name=f"INV_{st.session_state.data_file_name}.png",
+            mime="image/png",
+            icon=":material/image:",
+            on_click=no_redirect
+            )
 
     steps = 1000
     pctileSteps = np.arange(steps)
@@ -780,8 +798,6 @@ def show_inv_results(plot_engine='plotly'):
     altList = ['altair', 'alt', 'a']
     plotlyList = ['plotly', 'plty']
     if str(plot_engine).lower() in mplList:
-            
-
         # ── Triangulation for pseudosection panels ───────────────────────────────────
         triang_pseudo = tri.Triangulation(mid_x, pseudo_z)
 
@@ -937,6 +953,7 @@ def show_inv_results(plot_engine='plotly'):
         ax.set_ylabel('Depth (m)')
 
         plt.tight_layout(pad=2.5)
+        st.session_state.model_fig = fig
         st.pyplot(fig)
     elif str(plot_engine).lower() in altList:
         import altair as alt
@@ -985,6 +1002,7 @@ def show_inv_results(plot_engine='plotly'):
             title='Interpolated Data'
         )
 
+        st.session_state.model_fig = chart
         st.altair_chart(chart)
     else: # Plotly
         fig = plot_resistivity_plotly(model_xCenter, model_zCenter, rho_inv,
@@ -1505,7 +1523,7 @@ def plot_resistivity_plotly(
         margin=dict(t=90, b=60, l=60, r=40))
 
     fig.data[-3].legendrank = 3000
-    print("SUBPLOTS", )
+    st.session_state.model_fig = fig
     return fig
 
 
