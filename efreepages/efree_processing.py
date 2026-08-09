@@ -1563,6 +1563,10 @@ def convert_to_json():
     iterations = [int(i) for i in np.arange(len(allModels))]
     modelDict = dict(zip(iterations, np.asarray(allModels).tolist()))
 
+    nodes = np.array(mgr.paraDomain.positions())
+    nodeDict = {'X':nodes[:,0].tolist(),
+                'Z':nodes[:,1].tolist()}
+
     jsonDict = {"Profile_Name": st.session_state.data_file_name,
                 "Project_Name": st.session_state.project_name,
                 "XYZ": None,
@@ -1576,6 +1580,7 @@ def convert_to_json():
                 "Data_Residuals": np.asarray(mgr.inv.residual()).tolist(),
                 "Model_Locations": {'X': [c.center().x() for c in pmesh.cells()],
                                     'Z': [c.center().y() for c in pmesh.cells()]},
+                "Model_Nodes": nodeDict,
                 "Model_Resistivity": modelDict,
                 "Chi2": chi2Dict,
                 }
