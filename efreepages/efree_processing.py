@@ -56,6 +56,8 @@ PLOTLY_CMAPS = [
     ("HTEM", HTEM_CMAP),   # (label, actual colorscale value)
 ]
 
+DEFAULT_CMAP = HTEM_CMAP
+
 st.set_page_config(page_title='ERTFree Processing',
                    layout='wide',
                    page_icon=":material/cycle:",
@@ -308,7 +310,7 @@ def on_data_upload():
                             pName = line.split(':')[1].strip()
                     st.session_state.project_name = pName
                 elif 'dat' in suffix:
-                    pName = dfList[0].split(' ')
+                    pName = dfList[0].split(' ')[0]
 
                 st.session_state.project_name = pName
             except Exception:
@@ -366,12 +368,74 @@ def on_data_upload():
 
 
 def show_data_preview(data):
-    fig, ax = plt.subplots(figsize=(20,2))
-    ax.plot(data.sensors()[:,0], data.sensors()[:,2], color='g')
-    ax.scatter(data.sensors()[:,0], data.sensors()[:,2], c='g', marker='v')
-    ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
-    #ax.xaxis.set_label_position('top')
-    st.pyplot(fig)
+    dataDF = st.session_state.data_df
+    st.title(pathlib.Path(st.session_state.data_file_name).stem)
+    st.write(st.session_state.project_name)
+
+    elecXVals = data.sensors()[:, 0]
+    elecElevs = data.sensors()[:, 2]
+
+    surfInterp = interp1d(elecXVals, elecElevs)
+    pseudoXSurfElev = surfInterp(dataDF['pseudoX'])
+    pseudoZCorrected = pseudoXSurfElev - dataDF['pseudoZ']
+
+    if str(st.session_state.plot_engine).lower() == 'matplotlib':
+        fig, ax = plt.subplots(figsize=(20,2))
+        ax.plot(data.sensors()[:,0], data.sensors()[:,2], color='g')
+        ax.scatter(data.sensors()[:,0], data.sensors()[:,2], c='g', marker='v')
+        lowV = np.percentile(dataDF['rhoa'], 2)
+        if lowV < 0:
+            lowV = 0
+        inData = ax.scatter(dataDF['pseudoX'], pseudoZCorrected, 
+                   c=dataDF['rhoa'],
+                   cmap='jet',
+                   vmin=lowV,
+                   vmax=np.percentile(dataDF['rhoa'], 95)
+                   )
+        cb = plt.colorbar(inData)
+        ax.tick_params(top=True, labeltop=True, bottom=False, labelbottom=False)
+
+        st.pyplot(fig)
+    else:
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scattergl(
+                name="App. ρ",
+                x=dataDF['pseudoX'],
+                y=pseudoZCorrected,
+
+                mode="markers",
+                marker=dict(
+                    size=12,
+                    cmin=np.percentile(dataDF['rhoa'], 5),
+                    cmax=np.percentile(dataDF['rhoa'], 95),
+                    color=dataDF['rhoa'],
+                    colorscale=DEFAULT_CMAP,
+                    showscale=True,
+                    symbol="diamond",    
+                ),
+                customdata=np.asarray(st.session_state.ert_data['rhoa']),
+                hovertemplate="x=%{x:.1f}<br>z=%{y:.1f}<br>App. ρ=%{customdata:,.3f} Ω·m<extra></extra>",
+                ),
+            )
+
+        fig.add_trace(
+            go.Scatter(x=elecXVals,
+                       y=elecElevs,
+                       mode='lines+markers',
+                       line=dict(color='green',
+                                 width=3,
+                                 ),
+                        marker=dict(color='black',
+                                 size=8,
+                                 symbol='triangle-down'
+                                 ),
+                       )
+        )
+        fig.update_layout(
+            legend=dict(orientation='h')
+        )
+        st.plotly_chart(fig)
     st.dataframe(st.session_state.data_df_in)
 
 
