@@ -1,4 +1,5 @@
 import json
+import importlib
 import os
 import pathlib
 import tempfile
@@ -23,8 +24,14 @@ from scipy.interpolate import interp1d
 from scipy.spatial import ConvexHull
 import streamlit as st 
 
-jfile = "./efreepages/boone_htem_cmap.json"
-with open(jfile, 'r') as jf:
+
+RESOURCE_DIR = importlib.resources.files('erfree_resources')
+configJSONfpath = pathlib.Path(RESOURCE_DIR.joinpath('config.json')).as_posix()
+booonHTEMCMapfpath = pathlib.Path(RESOURCE_DIR.joinpath("boone_htem_cmap.json")).as_posix()
+with open(configJSONfpath, 'r') as jf:
+    config_dict = json.load(jf)
+
+with open(booonHTEMCMapfpath, 'r') as jf:
     jdata = json.load(jf)
 
 plotly_height = 800
@@ -236,18 +243,17 @@ def on_invert_data():
 
     with contextlib.redirect_stdout(logger):
         print("CREATING MESH")
-        mesh = ert.createInversionMesh(
-                    data,
-                    paraDX=0.5, # smaller = finer horizontal cells
-                    paraDepth=100, # shallower model depth
-                    quality=34
-                    )
+        st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
+        mesh = ert.createInversionMesh(data, 
+                                       **st.session_state.mesh_kwargs
+                                       )
 
         print("SETTING UP ERT Manager")
         mgr = ert.ERTManager(data)
         st.session_state.mgr = mgr
         print("STARTING INVERSION NOW")
-        inv = mgr.invert(mesh=mesh, maxIter=5, verbose=True)
+        st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": True}
+        inv = mgr.invert(**st.session_state.inv_kwargs)
         st.session_state.inv = inv
 
     # Reset sensors to prior to inversion (keeps Z in third column)
@@ -1567,8 +1573,13 @@ def convert_to_json():
     nodeDict = {'X':nodes[:,0].tolist(),
                 'Z':nodes[:,1].tolist()}
 
+    invKwargs = st.session_state.inv_kwargs.copy()
+    del invKwargs['mesh']
     jsonDict = {"Profile_Name": st.session_state.data_file_name,
                 "Project_Name": st.session_state.project_name,
+                "ERFree_Version": config_dict['version'],
+                "Inversion_Parameters":invKwargs,
+                "Mesh_Parameters":st.session_state.mesh_kwargs,
                 "XYZ": None,
                 "Array": None,
                 "Spread": None,
