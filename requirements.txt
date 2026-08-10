@@ -1,4 +1,5 @@
 geopandas
+kaleido
 matplotlib
 owslib
 pandas
