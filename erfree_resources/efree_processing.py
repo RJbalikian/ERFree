@@ -2,6 +2,8 @@ import json
 import importlib
 import os
 import pathlib
+import psutil
+from pympler import asizeof
 import tempfile
 import traceback
 
@@ -191,10 +193,30 @@ def main():
         show_inv_results(st.session_state.plot_engine)
     except Exception:
         if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
-            show_data_preview(st.session_state.ert_data)
+            if hasattr(st.session_state, 'inv') and st.session_state.inv is not None:
+                show_data_preview(st.session_state.ert_data)
         pass
     st.session_state.initial_setup = False
+    def render_debug_panel():
+        process = psutil.Process(os.getpid())
+        mem = process.memory_info().rss / 1024**2
 
+        with st.sidebar:
+            with st.expander("Debug Panel"):
+                st.markdown("### 🛠 Debug panel")
+                st.metric("Process RAM (MB)", f"{mem:.1f}")
+                st.metric("Session state keys", len(st.session_state))
+
+                rows = [
+                    {"key": k, "type": type(v).__name__, "size_mb": asizeof.asizeof(v) / (1024*1024)}
+                    for k, v in st.session_state.items()
+                ]
+                df = pd.DataFrame(rows).sort_values("size_mb", ascending=False)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # call this at the top of your app during development
+    render_debug_panel()    
+    
 
 def show_app_info():
     st.title("ERFree Web App")
@@ -205,14 +227,22 @@ def show_app_info():
 
 
 class StreamlitLogger(io.StringIO):
-    def __init__(self, placeholder):
+    def __init__(self, placeholder, max_lines=500):
         super().__init__()
         self.placeholder = placeholder
+        self.max_lines = max_lines
+        self.lines = []
 
     def write(self, s):
-        super().write(s)
-        self.placeholder.code(self.getvalue())
-        return len(s)
+        text = super().write(s)  # keep StringIO behavior (buffer, tell(), etc.)
+        if s.strip():
+            self.lines.extend(s.rstrip("\n").split("\n"))
+            self.lines = self.lines[-self.max_lines:]
+            self.placeholder.code("\n".join(self.lines))
+        return text
+
+    def flush(self):
+        pass
 
 
 def on_invert_data():
@@ -255,21 +285,42 @@ def on_invert_data():
     placeholder = st.empty()
     logger = StreamlitLogger(placeholder)
 
-    with contextlib.redirect_stdout(logger):
-        print("CREATING MESH")
-        st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
-        mesh = ert.createInversionMesh(data, 
-                                       **st.session_state.mesh_kwargs
-                                       )
-
-        print("SETTING UP ERT Manager")
-        mgr = ert.ERTManager(data)
-        st.session_state.mgr = mgr
-        print("STARTING INVERSION NOW")
-        st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": False}
-        inv = mgr.invert(**st.session_state.inv_kwargs)
-        st.session_state.inv = inv
-
+    try:
+        with st.status(f"Processing {st.session_state.data_file_name} (Project: {st.session_state.project_name})",
+                           expanded=True) as status:
+            if CONFIG_DICT['stdout_redirect']:
+                with contextlib.redirect_stdout(logger):
+                    print("CREATING MESH")
+                    mesh = ert.createInversionMesh(data,
+                                                **st.session_state.mesh_kwargs
+                                                )
+                    print("SETTING UP ERT Manager")
+                    mgr = ert.ERTManager(data)
+                    st.session_state.mgr = mgr
+                    print("Starting Inversion")
+                    st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": False}
+                    inv = mgr.invert(**st.session_state.inv_kwargs)
+                    st.session_state.inv = inv
+                status.update(label="Inversion complete!",
+                        state="complete", expanded=False)
+            else:
+                    st.write("Creating Mesh")
+                    st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
+                    mesh = ert.createInversionMesh(data,
+                                                **st.session_state.mesh_kwargs
+                                                )
+                    st.write("SETTING UP ERT Manager")
+                    mgr = ert.ERTManager(data)
+                    st.session_state.mgr = mgr
+                    st.write("Starting Inversion")
+                    st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": False}
+                    inv = mgr.invert(**st.session_state.inv_kwargs)
+                    st.session_state.inv = inv
+                    status.update(label="Inversion complete!",
+                            state="complete", expanded=False)
+    except Exception:
+        st.info("Inversion failed")
+        st.code(traceback.format_exc())
     # Reset sensors to prior to inversion (keeps Z in third column)
     for i, s in enumerate(sensors):
         data.setSensorPosition(i, pg.Pos(s[0], s[1], s[2]))
@@ -277,17 +328,29 @@ def on_invert_data():
     obs = np.asarray(mgr.inv.dataVals)
     calc = np.asarray(mgr.inv.response)
     percent_error = np.nanmean(np.abs(obs - calc) / obs) * 100
-    
+
     obs = np.asarray(mgr.inv.dataVals)
     calc = np.asarray(mgr.inv.response)
     mape = np.mean(np.abs(obs - calc) / obs * 100)
 
     st.write("Chi²", mgr.inv.chi2(), "% Error", mape)
-    
+
     show_inv_results(st.session_state.plot_engine)
 
 
+def clear_old_data():
+    #print(list(st.session_state.keys()))
+    attrs2Clear = ['inv', 'mgr', 'data_df', 'ert_data', 'ert_data_in', 'topo', 'data_df_in', 'pre_data']
+    # Delete relevant attributes and reset to None
+    st.toast("Clearing old data")
+    for attr in attrs2Clear:
+        if hasattr(st.session_state, attr):
+            del st.session_state[attr]
+            st.session_state[attr] = None
+
+
 def on_data_upload():
+    clear_old_data()
     hasTopo = False
     if st.session_state.data_uploader is not None:
         st.session_state.data_file_name = st.session_state.data_uploader.name
@@ -383,7 +446,7 @@ def on_data_upload():
         #    st.session_state.min_rho = 0
         #st.session_state.max_rho = np.asarray(data['rhoa']).max()
 
-    #show_data_preview(data)
+    show_data_preview(data)
     rho_range_update()
 
 
@@ -442,6 +505,7 @@ def show_data_preview(data):
         fig.add_trace(
             go.Scatter(x=elecXVals,
                        y=elecElevs,
+                       name='Surface',
                        mode='lines+markers',
                        line=dict(color='green',
                                  width=3,
