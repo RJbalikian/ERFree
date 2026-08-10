@@ -4,6 +4,7 @@ matplotlib
 owslib
 pandas
 plotly
+pybert
 pygimli
 rioxarray
 scipy
