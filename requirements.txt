@@ -6,6 +6,7 @@ pandas
 plotly
 pybert
 pygimli
+pympler
 rioxarray
 scipy
 streamlit

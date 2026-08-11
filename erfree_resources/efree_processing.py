@@ -272,6 +272,16 @@ def on_invert_data():
     remList = np.array(remList).astype(bool)
     data.remove(remList)
 
+    ### THIS CODE BLOCK WORKS!!!
+    #def post_step(iteration, inv):
+    #    st.code( f"OH YEAH \n  Iteration {inv.iter:2d} \n  Chi² = {inv.chi2():.3f} \n  RelRMS = {inv.relrms():.2f}% \n  AbsRMS = {inv.absrms():.3f}"
+    #        )
+    #mgr = ert.ERTManager(data)
+    ## Attach callback before inversion
+    #mgr.inv.setPostStep(post_step)
+    #inv = mgr.invert(**inv_kwargs)
+    ###############
+
     mgr = ert.ERTManager(data)
     sensors = np.array(data.sensors()).copy()
 
