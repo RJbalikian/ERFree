@@ -212,7 +212,7 @@ def main():
                     for k, v in st.session_state.items()
                 ]
                 df = pd.DataFrame(rows).sort_values("size_mb", ascending=False)
-                st.dataframe(df, use_container_width=True, hide_index=True)
+                st.dataframe(df, width='stretch', hide_index=True)
 
     # call this at the top of your app during development
     render_debug_panel()    
@@ -245,6 +245,20 @@ class StreamlitLogger(io.StringIO):
         pass
 
 
+def show_progress(iteration, inv):
+    prog = (inv.iter+1)/st.session_state.max_iters
+    progText = f"\nITERATION {inv.iter + 1} COMPLETED"
+    st.write(progText)
+    st.session_state.inv_progress_bar.progress(prog, progText)
+
+    iterText =f"Chi²    = {inv.chi2():.3f}\n"
+    iterText+=f"RelRMS  = {inv.relrms():.2f}%\n"
+    iterText+=f"fAbsRMS = {inv.absrms():.3f}"
+    st.code(iterText)
+
+    st.session_state.iterList.append(inv.iter)
+    st.session_state.chi2List.append(inv.chi2())
+    
 def on_invert_data():
     st.toast("Inverting data")
     st.session_state.vmin = st.session_state.vmax = None
@@ -281,8 +295,10 @@ def on_invert_data():
     #mgr.inv.setPostStep(post_step)
     #inv = mgr.invert(**inv_kwargs)
     ###############
+    
 
     mgr = ert.ERTManager(data)
+    st.session_state.mgr = mgr
     sensors = np.array(data.sensors()).copy()
 
     a = np.array(data['a'], dtype=int)   # current electrode +
@@ -296,41 +312,48 @@ def on_invert_data():
     logger = StreamlitLogger(placeholder)
 
     try:
+        st.session_state.inv_progress_bar = st.progress(0.1, "Inversion Progress")
         with st.status(f"Processing {st.session_state.data_file_name} (Project: {st.session_state.project_name})",
                            expanded=True) as status:
-            if CONFIG_DICT['stdout_redirect']:
-                with contextlib.redirect_stdout(logger):
-                    print("CREATING MESH")
-                    mesh = ert.createInversionMesh(data,
-                                                **st.session_state.mesh_kwargs
-                                                )
-                    print("SETTING UP ERT Manager")
-                    mgr = ert.ERTManager(data)
-                    st.session_state.mgr = mgr
-                    print("Starting Inversion")
-                    st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": False}
-                    inv = mgr.invert(**st.session_state.inv_kwargs)
-                    st.session_state.inv = inv
-                status.update(label="Inversion complete!",
-                        state="complete", expanded=False)
-            else:
-                    st.write("Creating Mesh")
-                    st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
-                    mesh = ert.createInversionMesh(data,
-                                                **st.session_state.mesh_kwargs
-                                                )
-                    st.write("SETTING UP ERT Manager")
-                    mgr = ert.ERTManager(data)
-                    st.session_state.mgr = mgr
-                    st.write("Starting Inversion")
-                    st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": 5, "verbose": False}
-                    inv = mgr.invert(**st.session_state.inv_kwargs)
-                    st.session_state.inv = inv
-                    status.update(label="Inversion complete!",
+
+            lineLen = 75
+            st.write("".center(lineLen, "="))
+            currLine = f"   Analyzing data: {st.session_state.data_file_name}   "
+            st.write(currLine.center(lineLen, " "))
+
+            st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
+            mkstr = '\nCreating mesh with parameters:\n\n'
+            for mkw, mval in st.session_state.mesh_kwargs.items():
+                mkstr += f"    {mkw}: {mval}\n"
+            st.code(mkstr)
+            mesh = ert.createInversionMesh(data,
+                                        **st.session_state.mesh_kwargs
+                                        )
+            currLine = f"\n--Mesh created with {mesh.cellCount():,d} cells   "
+            st.write(currLine)
+
+            st.write("\n\nStarting Inversion\n")
+            maxIters = st.session_state.max_iters = 5
+            st.session_state.inv_kwargs = {"mesh": mesh, "maxIter": maxIters, "verbose": False}
+            invstr = '\n  Inversion parameters:\n'
+            for invkw, invval in st.session_state.inv_kwargs.items():
+                invstr += f"      {invkw}: {invval}\n\n"
+            st.code(invstr)
+
+            st.session_state.chi2List = []
+            st.session_state.iterList = []
+            mgr.inv.setPostStep(show_progress)
+            inv = mgr.invert(**st.session_state.inv_kwargs)
+
+            st.session_state.inv = inv
+            status.update(label="Inversion complete!",
                             state="complete", expanded=False)
+            st.session_state.inv_progress_bar.progress(1, "Analysis Complete")
+            st.session_state.inv_progress_bar.empty()            
     except Exception:
         st.info("Inversion failed")
         st.code(traceback.format_exc())
+        return
     # Reset sensors to prior to inversion (keeps Z in third column)
     for i, s in enumerate(sensors):
         data.setSensorPosition(i, pg.Pos(s[0], s[1], s[2]))
