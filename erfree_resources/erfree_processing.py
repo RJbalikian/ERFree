@@ -128,6 +128,10 @@ def main():
                         value=True, key="auto_neg_remove")
             st.checkbox("Discard data not in $$\\rho_{apparent}$$ range:",
                         value=True, key='quick_apprho_range')
+            st.checkbox("Reverse profile",
+                        value=False, key='reverse',
+                        on_change=reverse_data)
+
             disableAppRhoRange = True
             if st.session_state.quick_apprho_range:
                 disableAppRhoRange = False
@@ -215,8 +219,10 @@ def main():
                 st.dataframe(df, width='stretch', hide_index=True)
 
     # call this at the top of your app during development
-    render_debug_panel()    
-    
+    render_debug_panel()
+    if not hasattr(st.session_state, 'data_is_reversed'):
+        st.session_state.data_is_reversed = None
+    print(st.session_state.data_is_reversed)
 
 def show_app_info():
     st.title("ERFree Web App")
@@ -246,18 +252,24 @@ class StreamlitLogger(io.StringIO):
 
 
 def show_progress(iteration, inv):
-    prog = (inv.iter+1)/st.session_state.max_iters
-    progText = f"\nITERATION {inv.iter + 1} COMPLETED"
-    st.write(progText)
-    st.session_state.inv_progress_bar.progress(prog, progText)
+    try:
+        prog = (inv.iter+1)/st.session_state.max_iters
+        if prog > 1:
+            prog = 1
+        progText = f"\nITERATION {inv.iter + 1} COMPLETED"
+        st.write(progText)
+        st.session_state.inv_progress_bar.progress(prog, progText)
 
-    iterText =f"Chi²    = {inv.chi2():.3f}\n"
-    iterText+=f"RelRMS  = {inv.relrms():.2f}%\n"
-    iterText+=f"fAbsRMS = {inv.absrms():.3f}"
-    st.code(iterText)
+        iterText =f"Chi²    = {inv.chi2():.3f}\n"
+        iterText+=f"RelRMS  = {inv.relrms():.2f}%\n"
+        iterText+=f"fAbsRMS = {inv.absrms():.3f}"
+        st.code(iterText)
 
-    st.session_state.iterList.append(inv.iter)
-    st.session_state.chi2List.append(inv.chi2())
+        st.session_state.iterList.append(inv.iter)
+        st.session_state.chi2List.append(inv.chi2())
+    except:
+        progText = f"\nITERATION {inv.iter + 1} COMPLETED"
+
     
 def on_invert_data():
     st.toast("Inverting data")
@@ -286,17 +298,6 @@ def on_invert_data():
     remList = np.array(remList).astype(bool)
     data.remove(remList)
 
-    ### THIS CODE BLOCK WORKS!!!
-    #def post_step(iteration, inv):
-    #    st.code( f"OH YEAH \n  Iteration {inv.iter:2d} \n  Chi² = {inv.chi2():.3f} \n  RelRMS = {inv.relrms():.2f}% \n  AbsRMS = {inv.absrms():.3f}"
-    #        )
-    #mgr = ert.ERTManager(data)
-    ## Attach callback before inversion
-    #mgr.inv.setPostStep(post_step)
-    #inv = mgr.invert(**inv_kwargs)
-    ###############
-    
-
     mgr = ert.ERTManager(data)
     st.session_state.mgr = mgr
     sensors = np.array(data.sensors()).copy()
@@ -313,12 +314,12 @@ def on_invert_data():
 
     try:
         st.session_state.inv_progress_bar = st.progress(0.1, "Inversion Progress")
-        with st.status(f"Processing {st.session_state.data_file_name} (Project: {st.session_state.project_name})",
+        with st.status(f"Processing {st.session_state.profile_name} (Project: {st.session_state.project_name})",
                            expanded=True) as status:
 
             lineLen = 75
             st.write("".center(lineLen, "="))
-            currLine = f"   Analyzing data: {st.session_state.data_file_name}   "
+            currLine = f"   Analyzing data: {st.session_state.profile_name}   "
             st.write(currLine.center(lineLen, " "))
 
             st.session_state.mesh_kwargs = {'paraDX': 0.5, 'paraDepth': 100, 'quality': 34}
@@ -382,13 +383,52 @@ def clear_old_data():
             st.session_state[attr] = None
 
 
+def reverse_data(on_read=False):
+    if hasattr(st.session_state, 'ert_data') and st.session_state.ert_data is not None:
+        # Will always reverse, even if already reversed (so back to normal)
+        data = st.session_state.ert_data
+        reversedData = data.copy()
+        xdata = [p.x() for p in reversedData.sensors()]
+        xmin = min(xdata)
+        xmax = max(xdata)
+
+        for i, p in enumerate(reversedData.sensors()):
+            reversedData.setSensorPosition(
+                i, pg.Pos(xmin + xmax - p.x(), p.y(), p.z())
+            )
+
+        dataDF = get_df_from_data(reversedData)
+        st.session_state.data_df = st.session_state.data_df_in  = dataDF
+
+        st.session_state.pre_data = st.session_state.ert_data = reversedData
+
+        if not hasattr(st.session_state, 'data_is_reversed') or st.session_state.data_is_reversed is None:
+            st.session_state.data_is_reversed = True
+        else:
+            st.session_state.data_is_reversed = not st.session_state.data_is_reversed
+
+        if st.session_state.data_is_reversed is False:
+            if '_rev' in st.session_state.profile_name:
+                st.session_state.profile_name = st.session_state.profile_name.split('_rev')[0]
+        elif st.session_state.data_is_reversed is True:
+            st.session_state.profile_name += '_rev'
+
+        if not on_read:
+            show_data_preview(reversedData)
+
+        return reversedData
+    else:
+        st.session_state.data_is_reversed = None
+
+
 def on_data_upload():
     clear_old_data()
     hasTopo = False
     if st.session_state.data_uploader is not None:
         st.session_state.data_file_name = st.session_state.data_uploader.name
+        st.session_state.profile_name = pathlib.Path(st.session_state.data_file_name).stem
         suffix = pathlib.Path(st.session_state.data_uploader.name).suffix
-        
+
         with tempfile.TemporaryDirectory() as tmpdir:
             data_path = os.path.join(tmpdir, f"data{suffix}")
             with open(data_path, "wb") as f:
@@ -414,6 +454,8 @@ def on_data_upload():
 
             if data is None:
                 return
+
+            # Get project name if possible
             st.session_state.project_name = None
             try:
                 with open(data_path, 'r') as df:
@@ -431,9 +473,10 @@ def on_data_upload():
                 st.session_state.project_name = pName
             except Exception:
                 pass
+
             # Try to extract elevation
             hasTopo = False
-            if data.sensors()[:,2].all() == 0:
+            if data.sensors()[:, 2].all() == 0:
                 with open(data_path, 'r') as d:
                     dataRead = d.readlines()
 
@@ -445,23 +488,32 @@ def on_data_upload():
                 st.session_state.topo = None
                 if hasTopo:
                     try:
-                        topo = pd.read_csv(data_path, skiprows=topoNum, sep='\t', nrows=int(dataRead[topoNum])-1)
+                        topo = pd.read_csv(data_path, skiprows=topoNum,
+                                           sep='\t',
+                                           nrows=int(dataRead[topoNum])-1)
                         topo = topo.astype(float)
                     except Exception:
-                        topo = pd.read_csv(data_path, skiprows=topoNum, sep=r'\s', nrows=int(dataRead[topoNum])-1)
+                        topo = pd.read_csv(data_path, skiprows=topoNum,
+                                           sep=r'\s',
+                                           nrows=int(dataRead[topoNum])-1)
                         topo = topo.astype(float)
-                    st.session_state.topo = topo
 
                     # Interpolate elevation data to sensor x-locations
-                    topoInterp = np.interp(data.sensors()[:,0].tolist(), 
+                    topoInterp = np.interp(data.sensors()[:, 0].tolist(),
                                            topo.index.tolist(), topo.values.flatten().tolist())
 
                     # Add the topography data to the data set
                     for i, p in enumerate(topoInterp):
                         old = data.sensors()[i]
                         data.setSensorPosition(i, pg.Pos(old[0], old[1], p))
-
+        if np.nanmedian(data.sensors()[:, 1]) != 0 and np.nanmedian(data.sensors()[:, 2]) == 0:
+            old = np.asarray(data.sensors())
+            noneVar = [data.setSensorPosition(i, pg.Pos(x, 0, old[i, 1])) for i, x in enumerate(data.sensors()[:, 0])]
         st.session_state.pre_data = st.session_state.ert_data = data
+
+        if st.session_state.reverse:
+            data = reverse_data(on_read=True)
+
         data['k'] = ert.geometricFactors(data)
 
         st.session_state.ert_data = st.session_state.ert_data_in = data
@@ -472,20 +524,20 @@ def on_data_upload():
             data['rhoa'] = dataDF['rhoa']
         st.session_state.min_rho = np.nanmin(dataDF['rhoa'])
         st.session_state.max_rho = np.nanmax(dataDF['rhoa'])
-        st.session_state.data_df = st.session_state.data_df_in  = dataDF
+        st.session_state.data_df = st.session_state.data_df_in = dataDF
         st.session_state.data_df = st.session_state.data_df_in = calculate_data_level_errors()
         #st.session_state.min_rho = np.asarray(data['rhoa']).min()
         #if st.session_state.auto_neg_remove and np.asarray(data['rhoa']).min() < 0:
         #    st.session_state.min_rho = 0
         #st.session_state.max_rho = np.asarray(data['rhoa']).max()
 
-    show_data_preview(data)
-    rho_range_update()
+        show_data_preview(data)
+        rho_range_update()
 
 
 def show_data_preview(data):
     dataDF = st.session_state.data_df
-    st.title(pathlib.Path(st.session_state.data_file_name).stem)
+    st.title(st.session_state.profile_name)
     st.write(st.session_state.project_name)
 
     elecXVals = data.sensors()[:, 0]
@@ -513,6 +565,7 @@ def show_data_preview(data):
 
         st.pyplot(fig)
     else:
+        # Plot pseudo points
         fig = go.Figure()
         fig.add_trace(
             go.Scattergl(
@@ -535,6 +588,7 @@ def show_data_preview(data):
                 ),
             )
 
+        # Plot surface
         fig.add_trace(
             go.Scatter(x=elecXVals,
                        y=elecElevs,
@@ -549,6 +603,7 @@ def show_data_preview(data):
                                  ),
                        )
         )
+
         fig.update_layout(
             legend=dict(orientation='h')
         )
@@ -756,7 +811,7 @@ def show_inv_results(plot_engine='plotly'):
         DLBCol.download_button(
             label="JSON",
             data=jsonText,
-            file_name=f"INV_{st.session_state.data_file_name}.json",
+            file_name=f"INV_{st.session_state.profile_name}.json",
             mime="application/json",
             icon=":material/data_object:",
             on_click=no_redirect
@@ -774,7 +829,7 @@ def show_inv_results(plot_engine='plotly'):
         DLBCol.download_button(
             label="Model Plot",
             data=img_bytes,
-            file_name=f"INV_{st.session_state.data_file_name}.png",
+            file_name=f"INV_{st.session_state.profile_name}.png",
             mime="image/png",
             icon=":material/image:",
             on_click=no_redirect
@@ -1638,7 +1693,7 @@ def plot_resistivity_plotly(
 
     fig.update_layout(
         autosize=False,
-        title=f"Inverted Resistivity Model: {pathlib.Path(st.session_state.data_file_name).stem}",
+        title=f"Inverted Resistivity Model: {st.session_state.profile_name}",
         height=ht, width=wt,
         xaxis_title="Distance (m)",
         yaxis_title="Elevation (m)",
@@ -1663,10 +1718,10 @@ def convert_to_json():
     pmesh = mgr.paraDomain
     inv = st.session_state.inv
     data = st.session_state.ert_data
-
-    elecLocDict = {'X':np.asarray(data.sensors()[:, 0]).tolist(),
-                   'Y':np.asarray(data.sensors()[:, 1]).tolist(),
-                   'Z':np.asarray(data.sensors()[:, 2]).tolist()}
+    
+    elecLocDict = {'X': np.asarray(data.sensors()[:, 0]).tolist(),
+                   'Y': np.asarray(data.sensors()[:, 1]).tolist(),
+                   'Z': np.asarray(data.sensors()[:, 2]).tolist()}
 
     minElecSpacing = np.nanmin(np.diff(np.asarray(data.sensors()[:, 0])))
 
@@ -1693,7 +1748,7 @@ def convert_to_json():
 
     invKwargs = st.session_state.inv_kwargs.copy()
     del invKwargs['mesh']
-    jsonDict = {"Profile_Name": st.session_state.data_file_name,
+    jsonDict = {"Profile_Name": st.session_state.profile_name,
                 "Project_Name": st.session_state.project_name,
                 "ERFree_Version": CONFIG_DICT['version'],
                 "Inversion_Parameters":invKwargs,
@@ -1701,7 +1756,7 @@ def convert_to_json():
                 "XYZ": None,
                 "Array": None,
                 "Spread": None,
-                "Electrode_Locations":elecLocDict,
+                "Electrode_Locations": elecLocDict,
                 "Min_Elec_Spacing": minElecSpacing,
                 'Data_Locations': dataDF[['pseudoX', 'pseudoZ']].to_dict(),
                 "Data_Observed": dataDF[rCol].to_numpy().tolist(),

@@ -4,6 +4,7 @@ matplotlib
 owslib
 pandas
 plotly
+psutil
 pybert
 pygimli
 pympler
